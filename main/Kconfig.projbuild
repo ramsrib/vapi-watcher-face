@@ -1,0 +1,58 @@
+menu "Vapi Watcher Face Configuration"
+
+    comment "Prefer a .env file (see .env.example) — it overrides everything here"
+
+    config VAPI_WIFI_SSID
+        string "WiFi SSID"
+        default ""
+        help
+            WiFi network the board joins on boot.
+
+    config VAPI_WIFI_PASSWORD
+        string "WiFi password"
+        default ""
+        help
+            Password for the WiFi network above.
+
+    config VAPI_API_URL
+        string "Vapi API base URL"
+        default "https://api.vapi.ai"
+        help
+            Base URL for the Vapi REST API. The firmware POSTs <url>/call to
+            create the call and receive its websocket URL.
+
+    config VAPI_API_KEY
+        string "Vapi private API key"
+        default ""
+        help
+            Vapi PRIVATE key, sent as `Authorization: Bearer` when creating a
+            call. Creating a call over the websocket transport requires the
+            private key; the public key only works for /call/web (Daily), which
+            this firmware cannot use.
+
+            DEV ONLY: this is baked into the image and can be recovered from a
+            flash dump. See the security note in the README before shipping.
+
+    config VAPI_ASSISTANT_ID
+        string "Vapi assistant ID"
+        default ""
+        help
+            The assistant this device calls. Copy it from the Vapi dashboard.
+
+    config VAPI_FIRST_MESSAGE
+        string "First message override (optional)"
+        default ""
+        help
+            Greeting spoken when the call connects. Empty leaves the assistant's
+            own firstMessage alone. Applied as a per-call override, so the saved
+            assistant is never modified.
+
+    config VAPI_MAX_DURATION_SECONDS
+        string "Max call duration in seconds (optional)"
+        default ""
+        help
+            Hard cap on a single call, as a decimal string. Empty leaves it to
+            the assistant's own setting. A cap is worth setting on a device with
+            a physical button, since a call left up bills until it times out.
+
+endmenu

@@ -1,0 +1,21 @@
+# This file was generated using idf.py save-defconfig. It can be edited manually.
+# Espressif IoT Development Framework (ESP-IDF) 5.3.0 Project Minimal Configuration
+#
+CONFIG_IDF_TARGET="esp32s3"
+CONFIG_ESPTOOLPY_FLASHSIZE_32MB=y
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_SPEED_80M=y
+CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=1024
+CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=262144
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+CONFIG_LV_COLOR_16_SWAP=y
+
+# --- I2C driver selection ---------------------------------------------------
+# The SenseCAP BSP, the Himax sscma_client and the IO expander all use the
+# legacy driver/i2c.h API. esp_codec_dev would otherwise pick the new
+# driver/i2c_master.h on IDF >= 5.3, and IDF aborts at boot if both are live:
+#   E i2c: CONFLICT! driver_ng is not allowed to be used with this old driver
+# Keeping the codec on the legacy driver is what makes the two agree.
+CONFIG_CODEC_I2C_BACKWARD_COMPATIBLE=y

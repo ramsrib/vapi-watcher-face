@@ -1,0 +1,15 @@
+.env
+.env.*
+!.env.example
+main/env_config.generated.h
+*.generated.h
+/build/
+/managed_components/
+dependencies.lock
+sdkconfig
+sdkconfig.old
+.vscode/
+compile_commands.json
+.DS_Store
+.cache/
+*.idx
