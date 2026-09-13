@@ -407,6 +407,50 @@ available failure. `VLM_REFRESH_MS` looks again every 8 s for the length of the
 call, sending only changed descriptions — repeating an identical one teaches the
 model that its eyes report the same thing whatever happens.
 
+## add-message triggers a reply unless you say otherwise
+
+Vapi's `add-message` carries `triggerResponseEnabled`, and it **defaults to
+`true`**. A message sent without it does not merely join the conversation
+history — it prods the assistant to speak.
+
+For camera descriptions arriving every eight seconds that is badly wrong, and
+wrong in a way that reads as a model problem rather than a protocol one. Asked
+"what am I holding?", the device replied "hold it up a little closer so I can
+get a good look" while holding a description that read *a yellow tennis ball
+with "Wilson 4" printed on it*. It was not dodging the question. It was
+answering the **frame refresh**, which had just prodded it, and the question was
+never addressed at all.
+
+`vapi_send_context()` inserts silently; `vapi_send_text()` keeps the triggering
+behaviour. The person's own speech is what should make it talk.
+
+Worth noting the role was never the problem — `system` is valid, alongside
+`assistant`, `user`, `function` and `tool`. The bug was an absent default.
+
+## Seeing an object needs more pixels than seeing a person
+
+416x416 is what the detection model wants and it is plenty for "is that a
+person". It is not plenty for "what is that in their hand": at ~8 KB of JPEG a
+held object is a few dozen pixels, and a vision model asked to identify one will
+hedge or invent. `VISION_SENSOR_OPT` selects 640x480 from the sensor's own list
+(0 = 240x240, 1 = 416x416, 2 = 480x480, 3 = 640x480) — 1.8x the pixels, which is
+affordable because frames are only retained once a second.
+
+With that and a *generic* prompt, the descriptions became specific enough to be
+worth having:
+
+```
+VLM: ...holding a yellow-green tennis ball up near their face.
+VLM: ...holds up a yellow tennis ball with "Wilson 4" printed on it
+```
+
+The prompt change mattered as much as the pixels. It used to ask for "clothing,
+colours, hair, glasses" — so that is what came back, however interesting the
+thing in shot. It now asks for a plain description of the frame and nothing
+else. The vision layer reports what is in front of the camera; the assistant's
+system prompt decides what is worth saying about it. Task-specific instructions
+belong there, where they can see the conversation, not here, where they cannot.
+
 ## A booth is a queue, not one conversation
 
 Two bugs that only matter once the second visitor walks up, which is to say:

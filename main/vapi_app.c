@@ -185,7 +185,7 @@ static void caption_task(void *arg)
      * before adding a second handshake on top of them. See VLM_SETTLE_MS. */
     vTaskDelay(pdMS_TO_TICKS(VLM_SETTLE_MS));
 
-    char last[220] = { 0 };
+    char last[400] = { 0 };
     bool first = true;
 
     while (vapi_call_is_active()) {
@@ -208,7 +208,7 @@ static void caption_task(void *arg)
             break;
         }
 
-        char caption[220];
+        char caption[400];
         int rc = vlm_describe(b64, caption, sizeof(caption));
         free(b64);
 
@@ -221,14 +221,13 @@ static void caption_task(void *arg)
             strncasecmp(caption, "nobody", 6) != 0 &&
             strcmp(caption, last) != 0) {
             snprintf(last, sizeof(last), "%s", caption);
-            char msg[512];
-            snprintf(msg, sizeof(msg),
-                     "[device context] Right now you can see: %s. Mention the "
-                     "most specific detail out loud in your next reply, using "
-                     "the actual words for it, then carry on naturally. Never "
-                     "describe your camera or say you are looking at an image.",
-                     caption);
-            vapi_send_text(msg);
+            char msg[640];
+            /* Just the description. Instructions about what to do with it
+             * live in the system prompt, where they are stated once and can
+             * see the whole conversation — repeating them on every refresh
+             * would both bloat the context and nag. */
+            snprintf(msg, sizeof(msg), "[device context] %s", caption);
+            vapi_send_context(msg);
         }
         first = false;
 

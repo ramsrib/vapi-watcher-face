@@ -35,6 +35,11 @@ int  vapi_call_stop(void);
 bool vapi_call_is_active(void);
 void vapi_call_query(void);
 int  vapi_send_text(const char *text);
+
+/** Add context to the conversation *silently*. Vapi's add-message triggers a
+ *  response by default; camera updates must not, or the assistant answers the
+ *  update instead of the person. */
+int  vapi_send_context(const char *text);
 int  vapi_send_control(const char *control);
 
 /* --- wifi (wifi.c) --------------------------------------------------------- */

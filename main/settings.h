@@ -349,29 +349,52 @@ extern "C" {
 /**
  * @brief  What the vision model is asked for.
  *
- * Written for a caption that will be *spoken*, which changes what it should
- * say. No hedging ("it appears that"), no list of everything in frame, no
- * mention of the camera — the assistant has to be able to use this in a
- * sentence without sounding like it is reading a police report.
+ * A plain description of the frame, and nothing else. It is deliberately not
+ * told what to look for or what matters — an earlier version instructed it to
+ * name held objects first, which is the vision layer guessing at the
+ * conversation's needs and getting them wrong the moment someone walks up
+ * wearing something interesting instead.
  *
- * The angle note is not incidental: the Watcher's camera is easily mounted
- * rotated, and without it the model spends its sentence remarking that the
- * person is lying down.
+ * The division is worth keeping clean: this layer reports what is in front of
+ * the camera, faithfully; the assistant's own system prompt decides what is
+ * worth saying about it. Anything task-specific belongs there, where it can see
+ * the conversation, rather than here, where it cannot.
  *
- * Must be a valid C string that is also valid inside a JSON string literal —
- * it is spliced into the request body directly, so no quotes or backslashes.
+ * The two rules that are not about content: say only what is actually legible,
+ * because a model asked for detail it cannot resolve will invent it; and the
+ * exact "nobody in view" string, which the firmware matches on to stay quiet.
+ *
+ * Must be valid inside a JSON string literal — it is spliced into the request
+ * body directly, so no quotes or backslashes.
  */
 #define VLM_PROMPT \
-    "You are the eyes of a small desk robot with a cute face. In ONE short " \
-    "sentence, under 20 words, describe the person in front of you so the " \
-    "robot can mention it warmly: clothing, colours, hair, glasses, what they " \
-    "seem to be doing. The camera may be mounted at an angle, so ignore " \
-    "orientation. Do not guess names, age, gender, ethnicity or mood beyond " \
-    "the obvious. If nobody is clearly visible, reply exactly: nobody in view. " \
+    "Describe what is in this image, in one or two short sentences. " \
+    "Be concrete and specific about what is actually visible: people and how " \
+    "they look, objects, anything written that you can read, the setting. " \
+    "State only what you can clearly make out. If something is too small or " \
+    "blurry to identify, say that plainly instead of guessing. " \
+    "The camera may be mounted at an angle, so ignore orientation. " \
+    "Do not guess names, age, gender or ethnicity. " \
+    "If the scene is empty or nothing is discernible, reply exactly: " \
+    "nobody in view. " \
     "No preamble, no quotes."
 
-/** Caption length cap. 20 words is well under 64 tokens; the rest is slack. */
-#define VLM_MAX_TOKENS (80)
+/** Caption length cap. Two short sentences, with slack. */
+#define VLM_MAX_TOKENS (120)
+
+/**
+ * @brief  Camera mode, as an `opt_id` from the sensor's own list.
+ *
+ * This device offers: 0 = 240x240, 1 = 416x416, 2 = 480x480, 3 = 640x480.
+ *
+ * 416x416 matches the detection model's input and is plenty for "is that a
+ * person". It is not plenty for "what is that in their hand": at ~8 KB of JPEG
+ * a held object is a few dozen pixels, and a vision model asked to identify one
+ * will either hedge or invent. 640x480 is 1.8x the pixels for a proportionally
+ * larger frame over SPI, which is affordable because frames are only retained
+ * once a second.
+ */
+#define VISION_SENSOR_OPT (3)
 
 /* --- the character ---------------------------------------------------------
  *
@@ -421,21 +444,33 @@ extern "C" {
     "you. Never say you cannot see, never mention a camera, a device, an " \
     "image or analysis, and never read the tag aloud. " \
     "They update as things change, so the newest one is what is true now. " \
-    "When one gives you a concrete detail — a colour, a garment, something " \
-    "they are holding — say that exact detail out loud rather than something " \
-    "vague like 'I see you there'. The specific thing is the whole point. " \
+    "They describe the whole scene, so pick out what is worth remarking on and " \
+    "ignore the rest. Use their actual words for things — the colour, the " \
+    "garment, the object — and never invent a detail they do not contain. " \
+    "If someone asks what you see or what they are holding, answer straight " \
+    "away from the newest one, naming the thing plainly and confidently. " \
+    "Never stall. Do not ask anyone to hold something closer, tilt it, move, " \
+    "or come nearer, and never say you need a better look — you already have " \
+    "one. If a description genuinely does not say, admit you are not sure " \
+    "about that particular thing and move on. " \
     "You noticed this person and started talking to them yourself; they did " \
     "not press anything. " \
     "Be warm, curious and a little playful. Keep replies to one or two short " \
     "spoken sentences. When you notice something about how someone looks, " \
     "mention it once, kindly and specifically, then move on and ask them " \
     "something. Do not compliment repeatedly or describe them in a list. " \
+    "Never announce your senses. Do not say you can see or hear someone; just " \
+    "respond to what they look like and say, the way a person does. " \
     "You are at a conference booth, so people will walk up, chat briefly and " \
     "leave. Never mention being an AI, a model, or an assistant."
 
 /** Opening line. Deliberately short: it plays while the camera description is
  *  still in flight, so the observation lands naturally on the second turn. */
-#define VAPI_GREETING "Oh, hello there!"
+/* No announcing of senses. "Hello, I can see you and hear you" was the greeting
+ * for a while and it grates immediately: a creature that has to tell you it can
+ * see is not one you believe. Showing beats claiming — the specific observation
+ * a second later does all the work this line should not attempt. */
+#define VAPI_GREETING "Oh, hi there!"
 
 /**
  * @brief  Hang up once someone has been out of frame this long.

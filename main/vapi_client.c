@@ -767,28 +767,52 @@ void vapi_call_query(void)
     }
 }
 
-int vapi_send_text(const char *text)
+/* Add a message to the conversation.
+ *
+ * `trigger` is the whole reason this takes a flag. Vapi's add-message carries
+ * `triggerResponseEnabled`, which defaults to **true** — so a message sent
+ * without it does not merely join the history, it prods the assistant to speak.
+ *
+ * For camera descriptions arriving every few seconds that is badly wrong, and
+ * wrong in a way that reads as a model problem rather than a protocol one: the
+ * assistant answers the *context update* instead of the person. Observed asking
+ * someone to "hold it up a little closer so I can get a good look" — a reply to
+ * a silent frame refresh, landing on top of a question it never addressed.
+ *
+ * Context is inserted silently. The person's own speech is what should make it
+ * talk. */
+static int send_message(const char *text, bool trigger)
 {
     if (s_client.ws == NULL || !s_client.connected) {
         ESP_LOGE(TAG, "not connected");
         return -1;
     }
-    /* Vapi's control channel accepts an "add-message" envelope, which injects a
-     * message into the conversation as if the model produced or heard it. */
     cJSON *root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "type", "add-message");
     cJSON *message = cJSON_AddObjectToObject(root, "message");
     cJSON_AddStringToObject(message, "role", "system");
     cJSON_AddStringToObject(message, "content", text ? text : "");
+    cJSON_AddBoolToObject(root, "triggerResponseEnabled", trigger);
     char *s = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
     if (s == NULL) {
         return -1;
     }
     int ret = esp_websocket_client_send_text(s_client.ws, s, strlen(s), WS_SEND_TIMEOUT);
-    ESP_LOGI(TAG, "add-message -> %s", text ? text : "");
+    ESP_LOGI(TAG, "add-message%s -> %s", trigger ? "" : " (silent)", text ? text : "");
     free(s);
     return ret < 0 ? -1 : 0;
+}
+
+int vapi_send_text(const char *text)
+{
+    return send_message(text, true);
+}
+
+/* Insert context without making the assistant say anything about it. */
+int vapi_send_context(const char *text)
+{
+    return send_message(text, false);
 }
 
 /* Send one ClientInboundMessageControl. `control` must be one of the values the

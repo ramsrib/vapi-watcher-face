@@ -374,7 +374,7 @@ int vision_init(void)
      * and simply never produces a detection, because nothing is feeding it
      * frames. The monitor example calls this; omitting it looks like a model
      * problem rather than a sensor one. */
-    esp_err_t ss = sscma_client_set_sensor(v.client, 1, 1, true);
+    esp_err_t ss = sscma_client_set_sensor(v.client, 1, VISION_SENSOR_OPT, true);
     if (ss != ESP_OK) {
         ESP_LOGW(TAG, "set_sensor failed: %s", esp_err_to_name(ss));
     }
