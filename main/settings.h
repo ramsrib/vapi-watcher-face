@@ -420,6 +420,10 @@ extern "C" {
     "see. Treat them as your own perception, never as something someone told " \
     "you. Never say you cannot see, never mention a camera, a device, an " \
     "image or analysis, and never read the tag aloud. " \
+    "They update as things change, so the newest one is what is true now. " \
+    "When one gives you a concrete detail — a colour, a garment, something " \
+    "they are holding — say that exact detail out loud rather than something " \
+    "vague like 'I see you there'. The specific thing is the whole point. " \
     "You noticed this person and started talking to them yourself; they did " \
     "not press anything. " \
     "Be warm, curious and a little playful. Keep replies to one or two short " \
@@ -496,6 +500,27 @@ extern "C" {
 /** How long after boot the self-test call is placed. Long enough for WiFi to
  *  settle on a slow association; see the 9.6 s DHCP measured on this board. */
 #define VAPI_SELFTEST_CALL_AFTER_MS (12000)
+
+/**
+ * @brief  How often to look again during a call.
+ *
+ * One frame per call is not sight, it is a photograph. The gap shows up the
+ * moment anyone asks the obvious question: "what am I holding?" — to which a
+ * device with a single stale frame can only improvise, and improvising about
+ * what it can see is the one thing this character must never do. Observed in
+ * testing: it invented "hold it closer so I can get a good look", which sounds
+ * alive and is not.
+ *
+ * So it looks again on a timer for as long as the call lasts. Eight seconds is
+ * short enough that holding something up is noticed within a turn, and at
+ * roughly seven requests for a minute-long conversation the cost stays near a
+ * cent per visitor.
+ *
+ * Only changes are sent. Re-injecting an identical description every eight
+ * seconds would fill the context with repetition and teach the model that its
+ * eyes report the same thing no matter what happens.
+ */
+#define VLM_REFRESH_MS (8000)
 
 /**
  * @brief  Let the call settle before the caption request handshakes.

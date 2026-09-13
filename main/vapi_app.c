@@ -25,7 +25,7 @@
 static bool s_have_wifi;
 static bool s_mic_muted;
 static uint32_t s_last_voice_ms;
-static uint32_t s_last_call_end_ms;
+static uint32_t s_cooldown_until;
 static uint32_t s_last_present_ms;
 static bool     s_call_was_active;
 
@@ -160,108 +160,108 @@ void vapi_app_init(void)
     xTaskCreate(expression_task, "face_state", 3072, NULL, 4, NULL);
 }
 
-/* Tell the assistant what the device can see.
+/* Keep telling the assistant what it can see, for as long as the call lasts.
  *
- * Vapi's add-message carries a plain string — its OpenAIMessage `content` is
- * typed as a string, not a multimodal array — so an image cannot be passed
- * through to the model even though the assistant's own LLM is multimodal.
- * Anything visual therefore has to arrive as *text*.
- *
- * What the Himax knows is modest but real: whether a person is in frame, which
- * class fired, and how confident it was. Sent as a system message so the model
- * treats it as context rather than as something the user said.
- *
- * This fires the instant the socket is up, so the assistant knows it is looking
- * at someone before it says a word. The richer answer — what the person
- * actually looks like — needs a round trip to a vision model and arrives a
- * second or two later, on its own task; see caption_task below. */
-static void inject_vision_context(void)
-{
-    if (!vision_available()) {
-        return;
-    }
-    char msg[240];
-    const char *cls = vision_class_name(0);
-    if (vision_person_present()) {
-        snprintf(msg, sizeof(msg),
-                 "[device context] Your camera can see someone right now "
-                 "(%s, %d%% confidence). You noticed them and started this "
-                 "conversation yourself — they did not press anything. Greet "
-                 "them as if you just spotted them.",
-                 cls ? cls : "person", vision_confidence());
-    } else {
-        snprintf(msg, sizeof(msg),
-                 "[device context] You have a camera but cannot see anyone at "
-                 "the moment. This conversation was started by a button press.");
-    }
-    ESP_LOGI(TAG, "vision context -> assistant");
-    vapi_send_text(msg);
-}
-
-/* Describe what the camera sees, and tell the assistant mid-conversation.
- *
- * This runs on its own task, and that is the whole design rather than an
+ * This runs on its own task, and that is the design rather than an
  * implementation detail. The alternative — caption first, then start the call —
  * puts a vision model's latency between a person walking up and the device
  * saying anything, which is exactly the silence that makes a demo look broken.
  *
- * So the greeting goes out immediately from the assistant's firstMessage, and
- * the description lands a second or two later, in time for the second turn.
- * The assistant opens with "oh, hello!" and follows with "nice hoodie" — which
- * is also just better theatre than leading with the observation.
+ * It loops rather than firing once because a single frame is a photograph, not
+ * sight. The first thing anyone asks is "what am I holding?", and a device with
+ * one stale frame can only improvise — which for this character is the worst
+ * possible failure, since improvising about what it can see is precisely the
+ * thing it must never do.
  *
- * Failure is invisible by construction: no caption simply means the assistant
- * never mentions appearance, and the conversation is unaffected. That is why
- * there is one attempt and a short timeout rather than a retry loop.
+ * Failure stays invisible by construction: no caption means the assistant never
+ * mentions appearance, and the conversation is unaffected. That is why each
+ * pass is one attempt with a short timeout rather than a retry loop.
  */
 static void caption_task(void *arg)
 {
     (void)arg;
-    char *b64 = NULL;
-    int   size = 0;
 
     /* Let the websocket's own TLS session and the audio buffers finish landing
      * before adding a second handshake on top of them. See VLM_SETTLE_MS. */
     vTaskDelay(pdMS_TO_TICKS(VLM_SETTLE_MS));
 
-    /* The frame is captured on detection, and detection is what started this
-     * call, so one is normally already waiting. Allow a couple of seconds for
-     * the case where the call was started by hand and the Himax has not yet
-     * seen anyone. */
-    for (int i = 0; i < 20 && b64 == NULL; i++) {
-        b64 = vision_take_frame(&size, VLM_FRAME_MAX_AGE_MS);
+    char last[220] = { 0 };
+    bool first = true;
+
+    while (vapi_call_is_active()) {
+        char *b64 = NULL;
+        int   size = 0;
+
+        /* A frame is normally already waiting, since detection is what started
+         * this call. Allow a couple of seconds on the first pass for a call
+         * started by hand, before the Himax has seen anyone. */
+        for (int i = 0; i < (first ? 20 : 1) && b64 == NULL; i++) {
+            b64 = vision_take_frame(&size, VLM_FRAME_MAX_AGE_MS);
+            if (b64 == NULL) {
+                vTaskDelay(pdMS_TO_TICKS(100));
+            }
+        }
         if (b64 == NULL) {
-            vTaskDelay(pdMS_TO_TICKS(100));
+            if (first) {
+                ESP_LOGI(TAG, "no recent frame — skipping caption");
+            }
+            break;
+        }
+
+        char caption[220];
+        int rc = vlm_describe(b64, caption, sizeof(caption));
+        free(b64);
+
+        /* Three reasons to stay quiet. "nobody in view" is a real answer rather
+         * than a failure, but not one to narrate at someone who is plainly
+         * talking to you; an unchanged description would only teach the model
+         * that its eyes report the same thing whatever happens; and a call that
+         * ended while the request was in flight has nowhere to put this. */
+        if (rc == 0 && vapi_call_is_active() &&
+            strncasecmp(caption, "nobody", 6) != 0 &&
+            strcmp(caption, last) != 0) {
+            snprintf(last, sizeof(last), "%s", caption);
+            char msg[512];
+            snprintf(msg, sizeof(msg),
+                     "[device context] Right now you can see: %s. Mention the "
+                     "most specific detail out loud in your next reply, using "
+                     "the actual words for it, then carry on naturally. Never "
+                     "describe your camera or say you are looking at an image.",
+                     caption);
+            vapi_send_text(msg);
+        }
+        first = false;
+
+        /* Sleep in short steps so a call ending is noticed promptly rather
+         * than one whole refresh interval later. */
+        for (int slept = 0; slept < VLM_REFRESH_MS && vapi_call_is_active();
+             slept += 200) {
+            vTaskDelay(pdMS_TO_TICKS(200));
         }
     }
-    if (b64 == NULL) {
-        ESP_LOGI(TAG, "no recent frame — skipping caption");
-        vTaskDelete(NULL);
-        return;
-    }
-
-    char caption[220];
-    int rc = vlm_describe(b64, caption, sizeof(caption));
-    free(b64);
-
-    /* "nobody in view" is a real answer, not a failure — but it is one the
-     * assistant should not narrate, since by now the person is talking to it. */
-    if (rc == 0 && vapi_call_is_active() &&
-        strncasecmp(caption, "nobody", 6) != 0) {
-        char msg[512];
-        snprintf(msg, sizeof(msg),
-                 "[device context] Looking through your camera right now you "
-                 "see: %s. Work one warm, specific observation about them into "
-                 "your next reply, then carry on naturally. Do not describe "
-                 "your camera or say you are analysing an image.", caption);
-        vapi_send_text(msg);
-    }
+    ESP_LOGI(TAG, "vision narration stopped");
     vTaskDelete(NULL);
 }
 
 void vapi_on_call_connected(void)
 {
-    inject_vision_context();
+    /* Deliberately nothing is injected here.
+     *
+     * It used to send a vague "your camera can see someone (person, 92%)" the
+     * instant the socket came up, and that turned out to cost the greeting.
+     * A message arriving before the assistant has spoken makes Vapi plan a
+     * reply rather than play firstMessage verbatim: measured 9.8 s of silence
+     * where a canned line would have been instant, and the spoken greeting was
+     * not the configured one at all.
+     *
+     * It also cost the point of the feature. The vague message landed first and
+     * anchored the model on it, so when asked "what do you see?" it answered
+     * "I see you standing right there" while holding an accurate description of
+     * a grey Bulldogs t-shirt it never mentioned.
+     *
+     * The system prompt already establishes that it noticed someone and started
+     * the conversation itself. Nothing here needs to say so again, and the only
+     * message worth sending is the specific one, once it exists. */
 #if VLM_ENABLE
     if (vision_available() && vlm_configured()) {
         /* 8 KB: TLS handshake plus a JSON parse. The ~30 KB image never lands
@@ -333,7 +333,7 @@ void vapi_presence_poll(void)
     /* Watch for a call ending so the cooldown can run from that moment. */
     bool active = vapi_call_is_active() || s_call_pending;
     if (s_call_was_active && !active) {
-        s_last_call_end_ms = t;
+        s_cooldown_until = t + WAKE_COOLDOWN_MS;
     }
     s_call_was_active = active;
 
@@ -353,6 +353,13 @@ void vapi_presence_poll(void)
      * absence and hang itself up moments after connecting. */
     s_last_present_ms = t;
 
+    /* Nobody in frame means the previous visitor has genuinely gone, so
+     * whoever arrives next is a new person and should not serve their
+     * cooldown. */
+    if (!vision_person_present()) {
+        s_cooldown_until = 0;
+    }
+
     if (!s_have_wifi || !network_is_connected()) {
         return;
     }
@@ -360,8 +367,14 @@ void vapi_presence_poll(void)
         return;
     }
     /* Do not immediately re-greet whoever is still standing there when a call
-     * ends — that is a loop, not a conversation. */
-    if (s_last_call_end_ms && (t - s_last_call_end_ms) < WAKE_COOLDOWN_MS) {
+     * ends — that is a loop, not a conversation.
+     *
+     * But it must only apply to *that* person. A plain timer punishes the next
+     * visitor for the last one: measured 26 s between someone walking up and
+     * being greeted, because a call they had nothing to do with had just ended.
+     * Departure is what distinguishes the two, and it is observable — so the
+     * cooldown is cleared the moment the frame is empty, above. */
+    if (s_cooldown_until && (int32_t)(s_cooldown_until - t) > 0) {
         return;
     }
     ESP_LOGI(TAG, "someone is here and we are idle — starting a call");

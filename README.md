@@ -382,6 +382,31 @@ also tells the model to ignore orientation, because the Watcher is easy to mount
 rotated and without that line the model spends its one sentence observing that
 the person is lying down.
 
+## What a real conversation taught us
+
+Three findings, none of which showed up in any amount of unattended testing.
+
+**The greeting was not the configured one.** `VAPI_GREETING` is "Oh, hello
+there!"; the device said "Oh, hi there. Uh, you just wandered right into my
+little world." A message arriving before the assistant has spoken makes Vapi
+plan a reply rather than play `firstMessage` verbatim — so injecting camera
+context the instant the socket came up cost **9.8 s of silence** where a canned
+line would have been immediate. The entire point of captioning off the critical
+path was to avoid that, and the connect-time injection put it back.
+
+**It held an accurate description and never used it.** Asked "what do you see?",
+it answered "I see you standing right there" while sitting on "a grey Bulldogs
+t-shirt". The vague `person, 92%` message landed first and anchored it. Nothing
+now goes out at connect; the only message worth sending is the specific one,
+once it exists.
+
+**One frame is a photograph, not sight.** Asked "what's in my hand?", it
+improvised: "hold it closer so I can get a good look." That sounds alive and
+is not, and for this character improvising about what it can see is the worst
+available failure. `VLM_REFRESH_MS` looks again every 8 s for the length of the
+call, sending only changed descriptions — repeating an identical one teaches the
+model that its eyes report the same thing whatever happens.
+
 ## A booth is a queue, not one conversation
 
 Two bugs that only matter once the second visitor walks up, which is to say:
@@ -395,6 +420,12 @@ greeting and was dropped into visitor one's conversation, mid-context, carrying
 visitor one's description. `HANGUP_AFTER_ABSENT_MS` ends the call ten seconds
 after the last detection, waiting for the assistant to stop talking first so a
 goodbye is not truncated.
+
+The cooldown that stops a finished visitor being re-greeted in a loop then has
+to not punish the *next* one: measured 26 s between someone walking up and being
+greeted, because a call they had nothing to do with had just ended. Departure is
+what distinguishes the two cases and it is observable, so the cooldown is
+cleared the moment the frame is empty.
 
 **The poll started a new call every tick.** `vapi_toggle_call()` dispatches to a
 worker, so for the ~2 s of HTTPS POST and TLS handshake the call is being opened
