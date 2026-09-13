@@ -29,9 +29,61 @@ static uint32_t s_last_voice_ms;
 /* How long after the last activity the face drifts off to sleep. */
 #define SLEEP_AFTER_MS (90 * 1000)
 
+#if VLM_ENABLE && VLM_SELFTEST
+/* Prove the caption path works, once, at boot.
+ *
+ * Everything this touches is shared with the real path: the same frame buffer,
+ * the same vlm_describe(), the same TLS stack and the same heap. The only thing
+ * it does not test is the Vapi injection, which is a websocket send that the
+ * call path already exercises constantly.
+ *
+ * The point is *when* it fails. A bad key or a rejected body otherwise surfaces
+ * the first time someone walks up to the device, which at a booth is the worst
+ * possible moment and the hardest to read — the conversation still happens, it
+ * is just inexplicably less impressive. Here it is a red line on the console
+ * ten seconds after power-on. */
+static void vlm_selftest_task(void *arg)
+{
+    (void)arg;
+    char *b64 = NULL;
+    int   size = 0;
+
+    /* The first frame lands about 2.5 s after boot; wifi is usually up before
+     * that, so wait rather than concluding there is no camera. */
+    for (int i = 0; i < 60 && b64 == NULL; i++) {
+        b64 = vision_take_frame(&size, 0);
+        if (b64 == NULL) {
+            vTaskDelay(pdMS_TO_TICKS(200));
+        }
+    }
+    if (b64 == NULL) {
+        ESP_LOGW(TAG, "selftest: no frame from the camera — vision path is down");
+        vTaskDelete(NULL);
+        return;
+    }
+
+    char caption[220];
+    if (vlm_describe(b64, caption, sizeof(caption)) == 0) {
+        ESP_LOGW(TAG, "selftest OK (%s): %s", vlm_model_name(), caption);
+    } else {
+        ESP_LOGE(TAG, "selftest FAILED — captions will be silently missing");
+    }
+    free(b64);
+    vTaskDelete(NULL);
+}
+#endif
+
 void vapi_set_wifi_state(bool connected)
 {
     s_have_wifi = connected;
+#if VLM_ENABLE && VLM_SELFTEST
+    /* Once, on the first association — not on every reconnect. */
+    static bool tested = false;
+    if (connected && !tested && vision_available() && vlm_configured()) {
+        tested = true;
+        xTaskCreate(vlm_selftest_task, "vlm_test", 8192, NULL, 3, NULL);
+    }
+#endif
     vapi_refresh_display();
 }
 

@@ -125,24 +125,6 @@ static void on_event(sscma_client_handle_t client,
 {
     (void)client; (void)ctx;
 
-#if VISION_DUMP_FRAME
-    /* One-shot frame dump for aiming/lighting checks. Reassemble on the host. */
-    static bool dumped = false;
-    if (!dumped && reply->data) {
-        char *im = NULL; int im_sz = 0;
-        if (sscma_utils_fetch_image_from_reply(reply, &im, &im_sz) == ESP_OK) {
-            dumped = true;
-            ESP_LOGW(TAG, "FRAME_BEGIN %d", im_sz);
-            for (int o = 0; o < im_sz; o += 512) {
-                int n = im_sz - o; if (n > 512) n = 512;
-                printf("FRAME:%.*s\n", n, im + o);
-            }
-            ESP_LOGW(TAG, "FRAME_END");
-            free(im);
-        }
-    }
-#endif
-
     sscma_client_box_t *boxes = NULL;
     int count = 0;
     int best = 0;
@@ -200,7 +182,8 @@ static void on_event(sscma_client_handle_t client,
      * What is stored is SSCMA's base64 text verbatim: that is the form both
      * vision APIs want, so decoding it here would only buy a re-encode later.
      * It is NUL-terminated so it can be spliced straight into a request body. */
-    if (best >= MIN_SCORE && (uint32_t)(t - v.frame_ms) >= FRAME_KEEP_INTERVAL_MS) {
+    if ((best >= MIN_SCORE || v.frame_size == 0) &&
+        (uint32_t)(t - v.frame_ms) >= FRAME_KEEP_INTERVAL_MS) {
         char *img = NULL;
         int img_size = 0;
         if (sscma_utils_fetch_image_from_reply(reply, &img, &img_size) == ESP_OK) {
@@ -222,6 +205,35 @@ static void on_event(sscma_client_handle_t client,
             }
             xSemaphoreGive(v.frame_lock);
             free(img);
+        }
+    }
+#endif
+
+#if VISION_DUMP_FRAME
+    /* One-shot frame dump. Reassemble on the host with tools/grab_frame.py.
+     *
+     * Prefers a frame with a person in it: what you need to know before
+     * trusting this in front of people is what a *subject* looks like to the
+     * sensor — framing, exposure, and which way up — and an empty room answers
+     * none of that.
+     *
+     * But it does not wait forever. If nobody has appeared within
+     * VISION_DUMP_WAIT_MS, it dumps whatever is in front of the camera, because
+     * "no detections" and "no picture at all" are very different faults and the
+     * dump is how you tell them apart. Waiting for a detection that may never
+     * come would withhold the evidence exactly when it is most needed. */
+    static bool dumped = false;
+    if (!dumped && (best >= MIN_SCORE || t > VISION_DUMP_WAIT_MS)) {
+        char *im = NULL; int im_sz = 0;
+        if (sscma_utils_fetch_image_from_reply(reply, &im, &im_sz) == ESP_OK) {
+            dumped = true;
+            ESP_LOGW(TAG, "FRAME_BEGIN %d score %d", im_sz, best);
+            for (int o = 0; o < im_sz; o += 512) {
+                int n = im_sz - o; if (n > 512) n = 512;
+                printf("FRAME:%.*s\n", n, im + o);
+            }
+            ESP_LOGW(TAG, "FRAME_END");
+            free(im);
         }
     }
 #endif

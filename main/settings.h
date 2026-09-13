@@ -235,9 +235,21 @@ extern "C" {
  */
 #define VISION_KEEP_FRAMES (1)
 
-/** Dump one JPEG over serial at startup, for checking aim and lighting. Off in
- *  normal use: it prints ~30 KB to the console and only ever fires once. */
-#define VISION_DUMP_FRAME (0)
+/**
+ * @brief  Dump the first frame containing a person, over the console.
+ *
+ * For checking what the camera actually sees before trusting it in front of
+ * people: framing, exposure, and orientation. Gated on a detection rather than
+ * on startup, because a startup dump is always a picture of an empty room.
+ *
+ * Prints ~30 KB of base64 once per boot. Capture and decode it with
+ * tools/grab_frame.py. Harmless to leave on, but noisy.
+ */
+#define VISION_DUMP_FRAME (1)
+
+/** How long to hold out for a frame with a person in it before dumping
+ *  whatever the camera is pointed at. */
+#define VISION_DUMP_WAIT_MS (25000)
 
 /**
  * @brief  Ask the Himax to identify itself and its model at startup.
@@ -360,6 +372,21 @@ extern "C" {
 
 /** Caption length cap. 20 words is well under 64 tokens; the rest is slack. */
 #define VLM_MAX_TOKENS (80)
+
+/**
+ * @brief  Caption one frame at boot and log the result.
+ *
+ * Exercises the entire device-side path — PSRAM allocation, TLS to the
+ * provider, the request body, the response parse — without needing a call, a
+ * button press, or anyone standing in front of the camera. The three things
+ * most likely to be wrong (a bad key, a rejected body shape, too little heap
+ * for the handshake) all fail here, on the console, in the first ten seconds
+ * after boot rather than mid-demo.
+ *
+ * It costs one request per boot. Leave it on while bringing the device up at a
+ * new venue; turn it off once the path is trusted.
+ */
+#define VLM_SELFTEST (1)
 
 /**
  * @brief  How stale a frame may be and still be worth describing.

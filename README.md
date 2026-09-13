@@ -148,6 +148,7 @@ main/
   settings.h      all tuning knobs, each with its measured justification
 tools/
   flash.py        CH342-safe flasher — use this, not `idf.py flash`
+  grab_frame.py   pull the frame the camera saw, as a JPEG
   gen_env_header.py  .env -> compile-time defines
 components/
   esp_codec_dev   vendored 1.3.6, for the I2C compat knob
@@ -327,6 +328,41 @@ standing two feet from a camera — Sonnet does that as well as Opus — and the
 result is spoken aloud in a live conversation, where a second of latency is
 audible and a point of caption quality is not. Swap `VLM_MODEL` to
 `"claude-opus-5"` if a caption ever disappoints; nothing else changes.
+
+### Proving it works before the demo
+
+`VLM_SELFTEST` captions one frame at boot and logs the result:
+
+```
+VLM: claude-sonnet-5 in 2851 ms (16 KB image): nobody in view
+VAPI_APP: selftest OK (claude-sonnet-5): nobody in view
+```
+
+That one line exercises the entire device-side path — PSRAM allocation, TLS to
+the provider, the request body, the response parse. The three things most likely
+to be wrong (a bad key, a rejected body shape, too little heap for the
+handshake) all fail here, on the console, ten seconds after power-on.
+
+The alternative is finding out the first time someone walks up to the device,
+which at a booth is both the worst moment and the hardest to read: the
+conversation still happens, it is just inexplicably less impressive.
+
+Measured on this board: **2851 ms** for a 16 KB frame, against **870 ms** for
+the same request from a Mac. The difference is the TLS handshake and a slower
+upload. Neither number matters much, since nothing waits on it — but both are
+comfortably inside the 8 s timeout.
+
+### Looking through the camera
+
+`tools/grab_frame.py --reset` pulls the frame the Himax actually saw and writes
+it as a JPEG. It prefers a frame with a person in it and falls back to whatever
+is in front of the lens after 25 s.
+
+Worth doing whenever the device moves. Every other signal about the camera is
+indirect — detection scores tell you the model is running, not what it is
+looking at, and a covered lens, a dark room and a sideways mount all read
+identically as "no detections". One picture settles all three, and it is the
+same picture the vision model will be asked to describe.
 
 ### Setting it up
 
