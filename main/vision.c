@@ -19,7 +19,12 @@
 /* A detection has to clear this to count. The default model reports plenty of
  * low-confidence boxes on empty frames; without a floor the device would wake
  * up at shadows. */
-#define MIN_SCORE 55
+/* Detection confidence floor, 0-100.
+ *
+ * Not yet tuned against real detections — the camera was returning black
+ * frames when this was last exercised, so no box has ever cleared it. Treat as
+ * a starting point, not a measurement. */
+#define MIN_SCORE 40
 
 /* How long a person must be absent before the next sighting counts as an
  * arrival rather than a continuation. Without this, one person shifting in
@@ -133,8 +138,20 @@ static void on_event(sscma_client_handle_t client,
         free(boxes);
     }
 
-    v.score = best;
+    /* Rate-limited heartbeat. Worth keeping: "no detections" is otherwise
+     * ambiguous between no events arriving, events with no boxes, and boxes
+     * below threshold — three very different faults. At 10 s it is cheap. */
+    static uint32_t last_log, events;
+    events++;
     uint32_t t = now_ms();
+    if ((uint32_t)(t - last_log) > 10000) {
+        last_log = t;
+        ESP_LOGI(TAG, "inference alive: %lu events/10s, boxes=%d best=%d (threshold %d)",
+                 (unsigned long)events, count, best, MIN_SCORE);
+        events = 0;
+    }
+
+    v.score = best;
 
     if (best >= MIN_SCORE) {
         bool was_away = !v.present || (t - v.last_absent_ms) < PRESENCE_HOLD_MS;
@@ -247,20 +264,36 @@ int vision_init(void)
     }
 #endif
 
-    /* Select model slot 1, as the SDK example does. If the Himax has no model
-     * stored this is where it shows up — the device's `model` flash partition
-     * was empty when dumped, and the stock firmware only downloads a model once
-     * a SenseCraft task is assigned. */
-    esp_err_t sm = sscma_client_set_model(v.client, 1);
-    if (sm != ESP_OK) {
-        ESP_LOGW(TAG, "set_model(1) failed: %s", esp_err_to_name(sm));
+    /* No set_model call, deliberately.
+     *
+     * The Himax already has one loaded and reports it as "Person Detection"
+     * with class 0 = person. Selecting a slot explicitly only breaks things:
+     * slot 1 is what the SDK example uses and slot 4 is what the factory
+     * firmware uses after downloading its own, and on this device both return
+     * ESP_FAIL because neither describes the model actually present.
+     *
+     * This was hidden for a long time. Until CONFIG_FREERTOS_HZ was corrected,
+     * get_model timed out, which read as "there is no model" and sent me off
+     * flashing one unnecessarily. Ask the chip before concluding. */
+
+    /* Turn the camera on. Easy to miss — inference starts happily without it
+     * and simply never produces a detection, because nothing is feeding it
+     * frames. The monitor example calls this; omitting it looks like a model
+     * problem rather than a sensor one. */
+    esp_err_t ss = sscma_client_set_sensor(v.client, 1, 1, true);
+    if (ss != ESP_OK) {
+        ESP_LOGW(TAG, "set_sensor failed: %s", esp_err_to_name(ss));
     }
 
     sscma_client_set_confidence_threshold(v.client, MIN_SCORE);
 
     /* times = -1 runs continuously. `show` would overlay boxes on the Himax's
      * own preview output, which we do not use — the display is the face. */
-    esp_err_t inv = sscma_client_invoke(v.client, -1, false, VISION_KEEP_FRAMES);
+    /* Args copied exactly from the monitor example: invoke(-1, false, true).
+     * The third argument is inverted inside the wrapper (`show ? 0 : 1` sent as
+     * RESULT_ONLY), so passing false here asks for results-only — which on this
+     * device yields events with zero boxes. */
+    esp_err_t inv = sscma_client_invoke(v.client, -1, false, true);
     if (inv != ESP_OK) {
         ESP_LOGE(TAG, "failed to start inference (%s)", esp_err_to_name(inv));
         return -1;

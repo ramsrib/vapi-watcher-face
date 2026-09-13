@@ -6,8 +6,9 @@ as its face.
 
 > **Status:** face and voice work on hardware — press the knob, talk, it talks
 > back, with no echo. Vision is written but blocked on the Himax having no model
-> loaded. A model has since been flashed successfully, but inference still does
-> not start. See [Roadmap](#roadmap).
+> Vision now runs — the Himax reports its model and inference streams at ~11/s —
+> but the camera returns black frames, which appears to be physical.
+> See [Roadmap](#roadmap).
 
 ## The face
 
@@ -163,70 +164,92 @@ M5Stack AtomS3R and is published at
 [`docs/AEC-TUNING.md`](../vapi-atoms3r-voice/docs/AEC-TUNING.md) is the fuller
 treatment of why gating beats cancelling.
 
-## Vision: model flashed, inference still not starting
+## Vision
 
-`vision.c` implements the NPU path — continuous inference, presence detection
-with hysteresis, JPEG retrieval, and a callback that wakes a call when someone
-arrives. `model_flash.c` provisions the Himax with a model. **The model write
-works; `invoke` still does not.** Unfinished, and this is where it stands.
+The NPU path works: the Himax is queried, inference runs continuously, and
+presence detection wakes a Vapi call. **One thing is unresolved — the camera
+returns black frames**, so no detection has ever fired. That looks physical
+rather than software (see below).
 
-### The model is on the device
+What comes up now, in 2.4 s from power-on:
 
-The Watcher ships with no AI model: the stock firmware only downloads one once a
-SenseCraft task is assigned, which this device never had. The model URL, the
-flash address and the procedure were all recovered from the factory firmware
-image and Seeed's `app_ota.c`:
+```
+VISION: himax SenseCAP Watcher, fw 2024.08.16
+VISION: model: Person Detection
+VISION:   class 0: person
+VISION: vision up — continuous inference running
+```
 
-| | |
-|---|---|
-| model | `sensecraft-statics.oss-accelerate.aliyuncs.com/.../epoch_50_int8.tflite` |
-| size | 1,258,000 bytes, TFLite (`TFL3` verified before writing) |
-| Himax firmware region | `0x0` — **not touched** |
-| Himax model region | **`0xA00000`** |
-| chunk size | 256 bytes (SPI flasher) |
+and inference reports `perf: [7, 76, 0]` — 7 ms preprocessing, 76 ms inference,
+around 11 events per second, with a real 416x416 JPEG in every reply.
 
-`model_flash.c` downloads it into PSRAM and streams it over SPI. Measured:
-**written in 25 s, all 1,258,000 bytes, no errors.** Set `VISION_FLASH_MODEL` to
-run it once, then clear it.
+### What was actually wrong: `CONFIG_FREERTOS_HZ`
 
-### What still fails
+Every SSCMA command used to time out, and the log filled with
+`request not found: <cmd>` — replies arriving *after* the client had given up.
 
-`sscma_client_invoke` returns `ESP_ERR_TIMEOUT`, and the log fills with
-`request not found: <cmd>` — a reply arriving *after* the client gave up waiting
-for it. Before the model write the stray replies were `NAME?`; after, they are
-`AT`. So something changed, but replies are still systematically late.
+The cause was **not** the Himax, the SPI link, the IO-expander sync line, or a
+missing model. It was this project inheriting **IDF's default tick rate of
+100 Hz**, where both of Seeed's working examples set **1000 Hz**:
 
-This looks like protocol timing rather than a missing model. One strong
-suspect: **the SPI sync line is on the I2C IO expander**
-(`BSP_SSCMA_CLIENT_SPI_SYNC = IO_EXPANDER_PIN_NUM_6`, `sync_use_expander`
-true), so every sync check costs an I2C transaction on a bus shared with the
-audio codec and the touch panel. That is a lot of latency in a handshake that
-appears to be timing sensitive.
+```
+CONFIG_FREERTOS_HZ=1000                      # ours had the IDF default, 100
+CONFIG_SSCMA_PROCESS_TASK_STACK_SIZE=10240   # ours had 4096
+CONFIG_SSCMA_PROCESS_TASK_AFFINITY_CPU1=y    # ours had no affinity
+```
 
-Worth trying next, roughly in order:
+At 100 Hz every tick is 10 ms rather than 1 ms, so every delay in the SSCMA read
+path inflates tenfold. Replies arrive in 256-byte packets, each preceded by a
+sync check, so the cost multiplies per packet and pushes the total past
+sscma's 2000 ms request timeout.
 
-1. `sscma_client_set_model(4)` — Seeed's own log calls `0xA00000` the *"4th ai
-   model"*, while the SDK example (and our code) selects slot 1.
-2. Raise `CONFIG_SSCMA_EVENT_QUEUE_SIZE` (currently 2) and the sscma task
-   priorities, which are below the display and audio tasks.
-3. Bind the device to SenseCraft once with the stock firmware, confirm the
-   camera works at all, and watch the Himax console during a working session to
-   see what a successful handshake looks like.
+Measured, same hardware, only the tick rate changed:
 
-### Two corrections worth recording
+| | before | after |
+|---|---|---|
+| `request not found` per 30 s | 112+ | **1** |
+| `rx buffer is full` per 30 s | 50 | **0** |
+| `sscma_client_invoke` | `ESP_ERR_TIMEOUT` | **succeeds** |
 
-**`slot_header invalid !!` is not about the model.** The line that follows it is
-`slot flash_offset 0x00000000` — the bootloader checking the *firmware* slot at
-offset 0. It appears identically before and after a successful model write, so
-it is not evidence of a missing model, despite reading like it.
+**If you scaffold a project for this board yourself, diff your `sdkconfig` against
+the SDK examples before debugging anything.** This cost hours and was entirely
+self-inflicted.
 
-**The Himax was not "already running inference".** An earlier reading of
-`rx buffer is full` as a result stream was wrong. Watching its own console shows
-it **rebooting in a loop**, and the flood was repeated boot banners.
+### Two conclusions that were wrong
 
-The Himax's console on the lower of the two USB serial ports (**921600 baud**)
-is by far the best diagnostic here — it shows the chip's own side of the
-conversation, independent of whatever the ESP32 believes.
+Recorded because both were confidently held and both sent me somewhere useless.
+
+**"The device has no AI model."** It has always had *Person Detection* loaded.
+`get_model` was timing out for the tick-rate reason above, and a timeout reads
+exactly like an absence. This led to writing a model to the Himax's flash at
+`0xA00000` that was never needed. No harm done — separate region, firmware
+untouched — but it was a real write to another processor's memory on a false
+premise. `model_flash.c` is kept because the mechanism is correct and useful if
+a device genuinely lacks a model.
+
+**"The Himax was already running inference and flooding the bus."** It was
+rebooting in a loop; the flood was repeated boot banners.
+
+Also worth knowing: **do not call `sscma_client_set_model()` at all** on this
+device. The SDK example selects slot 1 and the factory firmware selects slot 4;
+both return `ESP_FAIL` here, because the loaded model is in neither. Removing
+the call is what let `invoke` succeed.
+
+### The remaining problem: black frames
+
+A frame captured off the device decodes to a valid 416x416 JPEG that is almost
+entirely black, with a faint shape in the centre. The model is not failing — it
+has nothing to see.
+
+This looks physical: a protective film still on the lens, something covering it,
+or the device pointing somewhere dark. There is no exposure control in the SSCMA
+AT command set (`AT+SENSOR` takes only id/enable/opt_id), so brightness is the
+sensor's own business and not something firmware can correct.
+
+To re-test: `VISION_KEEP_FRAMES 1` retains the JPEG, and a frame can be pulled
+out with `sscma_utils_fetch_image_from_reply()`. `MIN_SCORE` (40) has never been
+validated against a real detection and should be tuned once the camera sees
+something.
 
 ## Roadmap
 
@@ -238,8 +261,10 @@ conversation, independent of whatever the ESP32 believes.
 3. **Wire the face to call state** — the echo gate's write-ahead playout clock is
    already a sample-accurate "is the assistant audible" signal, which is exactly
    what drives `speaking` and the mouth.
-4. **Add vision** — model flashed successfully; `invoke` still times out. See
-   above. Once a model is loaded, presence detection already wakes a call, and
+4. **Add vision** — inference runs; blocked on the camera returning black
+   frames, which looks physical. See above. Once it sees something, presence
+   detection already wakes a call and `sscma_utils_fetch_image_from_reply()`
+   gets a JPEG to a VLM for injection via Vapi `add-message`. Once a model is loaded, presence detection already wakes a call, and
    `sscma_utils_fetch_image_from_reply()` gets a JPEG to a VLM for injection via
    Vapi `add-message`.
 5. Custom art, then an enclosure — and re-measure the acoustics, because a plush

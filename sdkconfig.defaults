@@ -19,3 +19,20 @@ CONFIG_LV_COLOR_16_SWAP=y
 #   E i2c: CONFLICT! driver_ng is not allowed to be used with this old driver
 # Keeping the codec on the legacy driver is what makes the two agree.
 CONFIG_CODEC_I2C_BACKWARD_COMPATIBLE=y
+
+# --- SSCMA (Himax NPU) timing ------------------------------------------------
+# Copied from Seeed's own examples, which work where our defaults did not.
+#
+# FREERTOS_HZ is the important one. IDF defaults to 100 Hz, so every tick is
+# 10 ms and every delay in the SSCMA read path inflates 10x. The protocol reads
+# replies in 256-byte packets, each preceded by a sync check, so the cost
+# multiplies per packet — pushing replies past sscma's 2000 ms request timeout
+# and producing "request not found: <cmd>" as answers arrive after the client
+# has given up.
+CONFIG_FREERTOS_HZ=1000
+
+# The process task parses JSON replies; 4096 is not enough headroom for the
+# larger ones, and pinning it away from the display/audio work on CPU0 keeps it
+# responsive.
+CONFIG_SSCMA_PROCESS_TASK_STACK_SIZE=10240
+CONFIG_SSCMA_PROCESS_TASK_AFFINITY_CPU1=y

@@ -237,18 +237,20 @@ extern "C" {
  * ~20 seconds per query before giving up. Purely diagnostic — inference runs
  * fine without it.
  */
-#define VISION_QUERY_INFO (0)
+#define VISION_QUERY_INFO (1)
 
 /**
- * @brief  Flash an AI model to the Himax on next boot, then clear this.
+ * @brief  Flash an AI model to the Himax. Almost certainly NOT needed.
  *
- * The Watcher ships with no model — the Himax prints `slot_header invalid !!`
- * and refuses to run inference. Setting this downloads the URL below and writes
- * it to the Himax's model region (0xA00000), which is what the stock firmware
- * does once a SenseCraft task is assigned.
+ * This device already had "Person Detection" loaded from the factory — that was
+ * only invisible while CONFIG_FREERTOS_HZ was wrong and every query timed out.
+ * The model written by this path was therefore unnecessary; it went to a
+ * separate region (0xA00000) and did no harm, but do not reach for this simply
+ * because queries are failing. Ask the chip first (VISION_QUERY_INFO).
  *
- * Deliberately manual: it writes a second processor's flash and takes a minute,
- * so it should never be a side effect of a normal boot.
+ * Kept because the mechanism is correct and genuinely useful if a device really
+ * does lack a model, or to load a different one. It writes a second
+ * processor's flash and takes a minute, so it is never automatic.
  */
 #define VISION_FLASH_MODEL (0)
 
