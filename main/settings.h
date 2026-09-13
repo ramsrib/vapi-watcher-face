@@ -240,6 +240,25 @@ extern "C" {
 #define VISION_QUERY_INFO (0)
 
 /**
+ * @brief  Flash an AI model to the Himax on next boot, then clear this.
+ *
+ * The Watcher ships with no model — the Himax prints `slot_header invalid !!`
+ * and refuses to run inference. Setting this downloads the URL below and writes
+ * it to the Himax's model region (0xA00000), which is what the stock firmware
+ * does once a SenseCraft task is assigned.
+ *
+ * Deliberately manual: it writes a second processor's flash and takes a minute,
+ * so it should never be a side effect of a normal boot.
+ */
+#define VISION_FLASH_MODEL (0)
+
+/** Model to flash. This is the person-detection model the stock firmware
+ *  itself pulls from Seeed's CDN — the URL was recovered from the factory
+ *  firmware image. 1.26 MB, TFLite (`TFL3`). */
+#define VISION_MODEL_URL \
+    "https://sensecraft-statics.oss-accelerate.aliyuncs.com/refer/model/1715757421743_aZ3WX5_epoch_50_int8.tflite"
+
+/**
  * @brief  Default speaker volume (0-100). The codec accepts up to 100; 90
  *         leaves a little headroom against distortion and current draw.
  *

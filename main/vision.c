@@ -12,6 +12,7 @@
 #include "sscma_client_ops.h"
 #include "settings.h"
 #include "vision.h"
+#include "model_flash.h"
 
 #define TAG "VISION"
 
@@ -235,6 +236,14 @@ int vision_init(void)
         for (int i = 0; v.model->classes[i] != NULL; i++) {
             ESP_LOGI(TAG, "  class %d: %s", i, v.model->classes[i]);
         }
+    }
+#endif
+
+#if VISION_FLASH_MODEL
+    /* One-shot: give the Himax a model. Needs the network, so the caller must
+     * not run this before WiFi is up. */
+    if (model_flash_from_url(v.client, VISION_MODEL_URL) == 0) {
+        ESP_LOGW(TAG, "model flashed — power-cycle to load it, then clear VISION_FLASH_MODEL");
     }
 #endif
 

@@ -6,7 +6,8 @@ as its face.
 
 > **Status:** face and voice work on hardware — press the knob, talk, it talks
 > back, with no echo. Vision is written but blocked on the Himax having no model
-> loaded. See [Roadmap](#roadmap).
+> loaded. A model has since been flashed successfully, but inference still does
+> not start. See [Roadmap](#roadmap).
 
 ## The face
 
@@ -122,45 +123,70 @@ components/
 Device bring-up notes, the flash backup and the capability survey live in
 [`../sensecap-watcher/`](../sensecap-watcher/).
 
-## Vision: blocked on the Himax having no model
+## Vision: model flashed, inference still not starting
 
 `vision.c` implements the NPU path — continuous inference, presence detection
 with hysteresis, JPEG retrieval, and a callback that wakes a call when someone
-arrives. It builds and runs. **The Himax will not accept any of it**, and the
-evidence says the chip has no AI model loaded.
+arrives. `model_flash.c` provisions the Himax with a model. **The model write
+works; `invoke` still does not.** Unfinished, and this is where it stands.
 
-What happens, in order:
+### The model is on the device
 
-| step | result |
+The Watcher ships with no AI model: the stock firmware only downloads one once a
+SenseCraft task is assigned, which this device never had. The model URL, the
+flash address and the procedure were all recovered from the factory firmware
+image and Seeed's `app_ota.c`:
+
+| | |
 |---|---|
-| `sscma_client_init` | ok, link works — the Himax's unsolicited `INIT@STAT?` arrives |
-| `get_info` / `get_model` | **~20 s timeout each**, `request name failed` |
-| `set_confidence_threshold` | `request set confidence failed` |
-| `invoke` | `ESP_ERR_TIMEOUT`, `request invoke failed` |
+| model | `sensecraft-statics.oss-accelerate.aliyuncs.com/.../epoch_50_int8.tflite` |
+| size | 1,258,000 bytes, TFLite (`TFL3` verified before writing) |
+| Himax firmware region | `0x0` — **not touched** |
+| Himax model region | **`0xA00000`** |
+| chunk size | 256 bytes (SPI flasher) |
 
-Two things were learned diagnosing it, both worth keeping:
+`model_flash.c` downloads it into PSRAM and streams it over SPI. Measured:
+**written in 25 s, all 1,258,000 bytes, no errors.** Set `VISION_FLASH_MODEL` to
+run it once, then clear it.
 
-**The Himax boots already running an inference session** and streams results
-continuously over SPI, flooding sscma_client's rx buffer (`rx buffer is full`
-every ~550 ms) so replies to our commands never match. Calling
-`sscma_client_break()` first quiets the link — warnings dropped from 50 to 5 in
-a 30 s window.
+### What still fails
 
-**The display starves it.** Bringing LVGL up before the Himax handshake lets the
-face's 20 Hz redraw delay the sscma task enough to make its replies arrive after
-the client has given up. Initialising vision first cut retries from 197 to 33.
+`sscma_client_invoke` returns `ESP_ERR_TIMEOUT`, and the log fills with
+`request not found: <cmd>` — a reply arriving *after* the client gave up waiting
+for it. Before the model write the stray replies were `NAME?`; after, they are
+`AT`. So something changed, but replies are still systematically late.
 
-Neither fixed `invoke`, and the likely reason is simpler: **there is no model to
-run.** The device's `model` flash partition was completely empty when dumped
-(1 MB, zero bytes used), `get_model` reports nothing, and the stock firmware
-only downloads a model from Seeed's CDN once a SenseCraft task is assigned —
-which this device has never had.
+This looks like protocol timing rather than a missing model. One strong
+suspect: **the SPI sync line is on the I2C IO expander**
+(`BSP_SSCMA_CLIENT_SPI_SYNC = IO_EXPANDER_PIN_NUM_6`, `sync_use_expander`
+true), so every sync check costs an I2C transaction on a bus shared with the
+audio codec and the touch panel. That is a lot of latency in a handshake that
+appears to be timing sensitive.
 
-Getting past this means putting a model on the Himax: either bind the device to
-SenseCraft once with the stock firmware and let it fetch one, or flash a model
-directly (`sscma_client_ota_*`, or the `we2` flashers in the BSP). Until then,
-`vision_init()` fails cleanly on a background task and the face and voice are
-unaffected.
+Worth trying next, roughly in order:
+
+1. `sscma_client_set_model(4)` — Seeed's own log calls `0xA00000` the *"4th ai
+   model"*, while the SDK example (and our code) selects slot 1.
+2. Raise `CONFIG_SSCMA_EVENT_QUEUE_SIZE` (currently 2) and the sscma task
+   priorities, which are below the display and audio tasks.
+3. Bind the device to SenseCraft once with the stock firmware, confirm the
+   camera works at all, and watch the Himax console during a working session to
+   see what a successful handshake looks like.
+
+### Two corrections worth recording
+
+**`slot_header invalid !!` is not about the model.** The line that follows it is
+`slot flash_offset 0x00000000` — the bootloader checking the *firmware* slot at
+offset 0. It appears identically before and after a successful model write, so
+it is not evidence of a missing model, despite reading like it.
+
+**The Himax was not "already running inference".** An earlier reading of
+`rx buffer is full` as a result stream was wrong. Watching its own console shows
+it **rebooting in a loop**, and the flood was repeated boot banners.
+
+The Himax's console on the lower of the two USB serial ports (**921600 baud**)
+is by far the best diagnostic here — it shows the chip's own side of the
+conversation, independent of whatever the ESP32 believes.
 
 ## Roadmap
 
@@ -172,7 +198,7 @@ unaffected.
 3. **Wire the face to call state** — the echo gate's write-ahead playout clock is
    already a sample-accurate "is the assistant audible" signal, which is exactly
    what drives `speaking` and the mouth.
-4. **Add vision** — code is written; blocked on the Himax having no model. See
+4. **Add vision** — model flashed successfully; `invoke` still times out. See
    above. Once a model is loaded, presence detection already wakes a call, and
    `sscma_utils_fetch_image_from_reply()` gets a JPEG to a VLM for injection via
    Vapi `add-message`.

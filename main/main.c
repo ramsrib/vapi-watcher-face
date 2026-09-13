@@ -46,6 +46,20 @@ static void log_heap(void)
 
 static void vision_task(void *arg)
 {
+#if VISION_FLASH_MODEL
+    /* Flashing a model needs the network, and this task starts before WiFi
+     * does. Wait rather than reordering boot — the face should still come up
+     * instantly whether or not vision is being provisioned. */
+    ESP_LOGW(TAG, "VISION_FLASH_MODEL is set — waiting for network");
+    for (int i = 0; i < 60 && !network_is_connected(); i++) {
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+    if (!network_is_connected()) {
+        ESP_LOGE(TAG, "no network — cannot flash a model");
+        vTaskDelete(NULL);
+        return;
+    }
+#endif
     if (vision_init() == 0) {
         ESP_LOGI(TAG, "vision ready");
     } else {
