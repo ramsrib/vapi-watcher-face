@@ -223,11 +223,21 @@ extern "C" {
 /**
  * @brief  Keep the most recent JPEG frame in memory.
  *
- * Needed to show a cloud VLM what the device saw. Costs PSRAM per frame and
- * makes the Himax push the image over SPI on every inference, so leave it off
- * until the VLM path is actually wired up.
+ * Needed to show a cloud VLM what the device saw (see VLM_ENABLE). Only frames
+ * that actually contain a detection are retained, into one buffer that is
+ * grown and reused rather than reallocated — retaining every frame meant a
+ * ~20 KB malloc/free per inference, which is heap churn in exchange for images
+ * of an empty room.
+ *
+ * The frame is stored as the base64 text SSCMA delivers, not as decoded JPEG
+ * bytes: both providers want base64 on the wire, so decoding here would only
+ * mean re-encoding later.
  */
-#define VISION_KEEP_FRAMES (0)
+#define VISION_KEEP_FRAMES (1)
+
+/** Dump one JPEG over serial at startup, for checking aim and lighting. Off in
+ *  normal use: it prints ~30 KB to the console and only ever fires once. */
+#define VISION_DUMP_FRAME (0)
 
 /**
  * @brief  Ask the Himax to identify itself and its model at startup.
@@ -259,6 +269,117 @@ extern "C" {
  *  firmware image. 1.26 MB, TFLite (`TFL3`). */
 #define VISION_MODEL_URL \
     "https://sensecraft-statics.oss-accelerate.aliyuncs.com/refer/model/1715757421743_aZ3WX5_epoch_50_int8.tflite"
+
+/* --- vision-language captioning ------------------------------------------
+ *
+ * The Himax answers "is someone there". This answers "who, and what do they
+ * look like" — the difference between a device that greets and a device that
+ * notices. It is what the booth demo is actually selling.
+ *
+ * Cost is bounded by the NPU, not by a timer: a frame is sent once per
+ * arrival, so the bill scales with visitors rather than with uptime.
+ */
+
+/** Master switch. Off costs nothing — no frames retained, no task, no key. */
+#define VLM_ENABLE (1)
+
+/**
+ * @brief  Which provider to compile.
+ *
+ * Anthropic by default. Both are competent at this task — one sentence about
+ * one person in one small frame is not where frontier models separate — so the
+ * choice came down to operational details: Anthropic takes the base64 JPEG
+ * verbatim in its own field, while OpenAI wants it wrapped in a `data:` URI,
+ * and Anthropic's `max_tokens` has been stable where OpenAI renamed theirs to
+ * `max_completion_tokens` on the newer models. Fewer things to be wrong about
+ * at a venue.
+ *
+ * The other path is compiled-in and one #define away, which is the point: at a
+ * booth, a second provider you can switch to in a reflash is worth more than
+ * whichever one benchmarks better today.
+ */
+#define VLM_PROVIDER_ANTHROPIC (1)
+
+#if VLM_PROVIDER_ANTHROPIC
+#define VLM_API_URL "https://api.anthropic.com/v1/messages"
+/**
+ * Sonnet 5, not Opus 5. This is a deliberate exception to "use the strongest
+ * model": the task is a 20-word description of a person standing two feet from
+ * a camera, which Sonnet does as well as Opus, and the response is spoken
+ * aloud in a live conversation where a second of latency is audible and a
+ * point of caption quality is not. Opus earns its keep on reasoning; there is
+ * none here.
+ *
+ * If a caption ever disappoints at the booth, swap this to "claude-opus-5" —
+ * it is one string and nothing else changes.
+ */
+#define VLM_MODEL "claude-sonnet-5"
+#else
+#define VLM_API_URL "https://api.openai.com/v1/chat/completions"
+#define VLM_MODEL "gpt-5.2"
+#endif
+
+/** API key for the selected provider, from .env. */
+#if VLM_PROVIDER_ANTHROPIC
+#ifdef ENV_ANTHROPIC_API_KEY
+#define VLM_API_KEY ENV_ANTHROPIC_API_KEY
+#else
+#define VLM_API_KEY ""
+#endif
+#else
+#ifdef ENV_OPENAI_API_KEY
+#define VLM_API_KEY ENV_OPENAI_API_KEY
+#else
+#define VLM_API_KEY ""
+#endif
+#endif
+
+/**
+ * @brief  What the vision model is asked for.
+ *
+ * Written for a caption that will be *spoken*, which changes what it should
+ * say. No hedging ("it appears that"), no list of everything in frame, no
+ * mention of the camera — the assistant has to be able to use this in a
+ * sentence without sounding like it is reading a police report.
+ *
+ * The angle note is not incidental: the Watcher's camera is easily mounted
+ * rotated, and without it the model spends its sentence remarking that the
+ * person is lying down.
+ *
+ * Must be a valid C string that is also valid inside a JSON string literal —
+ * it is spliced into the request body directly, so no quotes or backslashes.
+ */
+#define VLM_PROMPT \
+    "You are the eyes of a small desk robot with a cute face. In ONE short " \
+    "sentence, under 20 words, describe the person in front of you so the " \
+    "robot can mention it warmly: clothing, colours, hair, glasses, what they " \
+    "seem to be doing. The camera may be mounted at an angle, so ignore " \
+    "orientation. Do not guess names, age, gender, ethnicity or mood beyond " \
+    "the obvious. If nobody is clearly visible, reply exactly: nobody in view. " \
+    "No preamble, no quotes."
+
+/** Caption length cap. 20 words is well under 64 tokens; the rest is slack. */
+#define VLM_MAX_TOKENS (80)
+
+/**
+ * @brief  How stale a frame may be and still be worth describing.
+ *
+ * Generous relative to the call it serves: the frame that triggered the call is
+ * milliseconds old, and the only way to approach this bound is a call started
+ * by hand long after anyone was last seen — in which case describing them
+ * would be wrong anyway.
+ */
+#define VLM_FRAME_MAX_AGE_MS (30000)
+
+/**
+ * @brief  Give up after this long.
+ *
+ * Short on purpose. The caption is an enhancement arriving mid-conversation —
+ * if it is not there within a few seconds the moment for it has passed, and a
+ * late injection is worse than none because the assistant comments on a person
+ * who has already moved on. One attempt, no retry, for the same reason.
+ */
+#define VLM_TIMEOUT_MS (8000)
 
 /**
  * @brief  Default speaker volume (0-100). The codec accepts up to 100; 90

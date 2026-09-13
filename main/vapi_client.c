@@ -497,6 +497,10 @@ static void ws_event_handler(void *arg, esp_event_base_t base, int32_t event_id,
         s_client.connected = true;
         s_client.ever_connected = true;
         start_streaming();
+        /* The app layer injects context here. Deliberately after the socket is
+         * up rather than at call creation: add-message only has somewhere to go
+         * once the session exists. */
+        vapi_on_call_connected();
         break;
 
     case WEBSOCKET_EVENT_DATA: {

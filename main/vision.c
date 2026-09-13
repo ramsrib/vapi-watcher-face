@@ -7,6 +7,7 @@
 #include "freertos/semphr.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "esp_heap_caps.h"
 #include "sensecap-watcher.h"
 #include "sscma_client_io.h"
 #include "sscma_client_ops.h"
@@ -31,6 +32,14 @@
  * their seat would re-trigger the greeting repeatedly. */
 #define ABSENCE_MS 8000
 
+/* How often at most to copy a frame out of the reply stream.
+ *
+ * Inference runs at ~10 Hz and every reply carries the JPEG, so retaining each
+ * one is a ~30 KB copy ten times a second for as long as anyone is standing
+ * there. A caption only ever needs one frame, and any frame from the last
+ * second is as good as any other. */
+#define FRAME_KEEP_INTERVAL_MS 1000
+
 /* Detections are sparse and jittery — a person is routinely missed for a frame
  * or two. Treat them as present until this long after the last sighting, so the
  * presence signal does not flicker. */
@@ -47,8 +56,10 @@ typedef struct {
     vision_presence_cb_t  on_presence;
 
     SemaphoreHandle_t     frame_lock;
-    uint8_t              *frame;
-    int                   frame_size;
+    uint8_t              *frame;       /*!< base64 JPEG text, NUL-terminated */
+    int                   frame_size;  /*!< length excluding the NUL */
+    int                   frame_cap;   /*!< allocation; grown, never shrunk */
+    uint32_t              frame_ms;    /*!< when it was captured */
 
     sscma_client_model_t *model;
 } vision_t;
@@ -84,15 +95,22 @@ const char *vision_class_name(int target)
     return NULL;
 }
 
-uint8_t *vision_take_frame(int *out_size)
+char *vision_take_frame(int *out_size, int max_age_ms)
 {
-    uint8_t *copy = NULL;
+    char *copy = NULL;
     xSemaphoreTake(v.frame_lock, portMAX_DELAY);
-    if (v.frame && v.frame_size > 0) {
-        copy = malloc(v.frame_size);
+    /* Refuse a frame older than the caller is willing to act on. A caption of
+     * whoever stood here ten minutes ago is worse than no caption: the
+     * assistant would describe someone who is not in the room. */
+    bool fresh = max_age_ms <= 0 || (now_ms() - v.frame_ms) <= (uint32_t)max_age_ms;
+    if (v.frame && v.frame_size > 0 && fresh) {
+        copy = heap_caps_malloc(v.frame_size + 1, MALLOC_CAP_SPIRAM);
         if (copy) {
             memcpy(copy, v.frame, v.frame_size);
-            *out_size = v.frame_size;
+            copy[v.frame_size] = '\0';
+            if (out_size) {
+                *out_size = v.frame_size;
+            }
         }
     }
     xSemaphoreGive(v.frame_lock);
@@ -107,23 +125,21 @@ static void on_event(sscma_client_handle_t client,
 {
     (void)client; (void)ctx;
 
-#if VISION_KEEP_FRAMES
-    /* Retain the JPEG so a VLM can be shown what the device saw. Costs PSRAM
-     * per frame, which is why it is behind a switch. */
-    char *img = NULL;
-    int img_size = 0;
-    if (sscma_utils_fetch_image_from_reply(reply, &img, &img_size) == ESP_OK) {
-        xSemaphoreTake(v.frame_lock, portMAX_DELAY);
-        free(v.frame);
-        v.frame = malloc(img_size);
-        if (v.frame) {
-            memcpy(v.frame, img, img_size);
-            v.frame_size = img_size;
-        } else {
-            v.frame_size = 0;
+#if VISION_DUMP_FRAME
+    /* One-shot frame dump for aiming/lighting checks. Reassemble on the host. */
+    static bool dumped = false;
+    if (!dumped && reply->data) {
+        char *im = NULL; int im_sz = 0;
+        if (sscma_utils_fetch_image_from_reply(reply, &im, &im_sz) == ESP_OK) {
+            dumped = true;
+            ESP_LOGW(TAG, "FRAME_BEGIN %d", im_sz);
+            for (int o = 0; o < im_sz; o += 512) {
+                int n = im_sz - o; if (n > 512) n = 512;
+                printf("FRAME:%.*s\n", n, im + o);
+            }
+            ESP_LOGW(TAG, "FRAME_END");
+            free(im);
         }
-        xSemaphoreGive(v.frame_lock);
-        free(img);
     }
 #endif
 
@@ -142,23 +158,73 @@ static void on_event(sscma_client_handle_t client,
     /* Rate-limited heartbeat. Worth keeping: "no detections" is otherwise
      * ambiguous between no events arriving, events with no boxes, and boxes
      * below threshold — three very different faults. At 10 s it is cheap. */
-    static uint32_t last_log, events, win_hits;
+    static uint32_t last_log, events, win_hits, win_max_gap, last_hit_ms;
     static int win_best;
     events++;
-    if (count > 0)   win_hits++;
-    if (best > win_best) win_best = best;
     uint32_t t = now_ms();
+    if (best >= MIN_SCORE) {
+        win_hits++;
+        if (last_hit_ms) {
+            uint32_t g = t - last_hit_ms;
+            if (g > win_max_gap) win_max_gap = g;
+        }
+        last_hit_ms = t;
+    }
+    if (best > win_best) win_best = best;
     if ((uint32_t)(t - last_log) > 10000) {
         last_log = t;
         /* Max over the window, not the instantaneous frame. Reporting the frame
          * that happened to coincide with the log makes a working detector look
          * dead whenever the subject blinks out for one frame. */
-        ESP_LOGI(TAG, "inference alive: %lu events/10s, frames with a box: %lu, best score: %d (threshold %d)",
-                 (unsigned long)events, (unsigned long)win_hits, win_best, MIN_SCORE);
-        events = 0; win_hits = 0; win_best = 0;
+        /* max_gap is the number PRESENCE_HOLD_MS has to clear: the longest
+         * stretch, while someone was actually there, that the detector reported
+         * nothing. Set the hold from this rather than by guessing. */
+        ESP_LOGI(TAG, "inference alive: %lu events/10s, hits: %lu, best: %d, max detect gap: %lu ms (hold %d)",
+                 (unsigned long)events, (unsigned long)win_hits, win_best,
+                 (unsigned long)win_max_gap, PRESENCE_HOLD_MS);
+        events = 0; win_hits = 0; win_best = 0; win_max_gap = 0;
     }
 
     v.score = best;
+
+#if VISION_KEEP_FRAMES
+    /* Retain the frame, but only when there is something in it.
+     *
+     * Two economies, both of which matter on this chip. Gating on a detection
+     * means the buffer holds a picture of a person rather than whichever empty
+     * room happened to be last, and it cuts the copy rate from every inference
+     * to only those that matter. Reusing one grown buffer avoids a ~20 KB
+     * malloc/free pair per retained frame — PSRAM is plentiful here but
+     * fragmenting it under a long-running call is not free.
+     *
+     * What is stored is SSCMA's base64 text verbatim: that is the form both
+     * vision APIs want, so decoding it here would only buy a re-encode later.
+     * It is NUL-terminated so it can be spliced straight into a request body. */
+    if (best >= MIN_SCORE && (uint32_t)(t - v.frame_ms) >= FRAME_KEEP_INTERVAL_MS) {
+        char *img = NULL;
+        int img_size = 0;
+        if (sscma_utils_fetch_image_from_reply(reply, &img, &img_size) == ESP_OK) {
+            xSemaphoreTake(v.frame_lock, portMAX_DELAY);
+            if (img_size + 1 > v.frame_cap) {
+                uint8_t *p = heap_caps_realloc(v.frame, img_size + 1, MALLOC_CAP_SPIRAM);
+                if (p) {
+                    v.frame = p;
+                    v.frame_cap = img_size + 1;
+                } else {
+                    v.frame_cap = 0;   /* v.frame still valid at its old size */
+                }
+            }
+            if (v.frame && img_size + 1 <= v.frame_cap) {
+                memcpy(v.frame, img, img_size);
+                v.frame[img_size] = '\0';
+                v.frame_size = img_size;
+                v.frame_ms = t;
+            }
+            xSemaphoreGive(v.frame_lock);
+            free(img);
+        }
+    }
+#endif
 
     if (best >= MIN_SCORE) {
         /* The very first sighting is always an arrival.
@@ -300,6 +366,20 @@ int vision_init(void)
     if (ss != ESP_OK) {
         ESP_LOGW(TAG, "set_sensor failed: %s", esp_err_to_name(ss));
     }
+
+#if VISION_QUERY_INFO
+    /* What sensor modes does this camera offer? `opt_id` in set_sensor selects
+     * one, and if any of them differ in orientation that would be a software
+     * fix for the rotated frame. No wrapper exists, so ask directly. */
+    {
+        sscma_client_reply_t r = { 0 };
+        if (sscma_client_request(v.client, "AT+SENSORS?\r\n", &r, true,
+                                 pdMS_TO_TICKS(2000)) == ESP_OK && r.data) {
+            ESP_LOGW(TAG, "sensors: %.300s", r.data);
+            sscma_client_reply_clear(&r);
+        }
+    }
+#endif
 
     sscma_client_set_confidence_threshold(v.client, MIN_SCORE);
 

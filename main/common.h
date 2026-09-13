@@ -45,6 +45,9 @@ bool network_is_connected(void);
 /* --- app wiring (vapi_app.c) ---------------------------------------------- */
 
 void vapi_app_init(void);
+
+/** Called from the transport once the websocket is up and audio is flowing. */
+void vapi_on_call_connected(void);
 void vapi_refresh_display(void);
 void vapi_set_wifi_state(bool connected);
 void vapi_toggle_call(void);

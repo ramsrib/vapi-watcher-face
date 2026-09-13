@@ -44,12 +44,18 @@ bool vision_person_present(void);
 int vision_confidence(void);
 
 /**
- * @brief  Copy the most recent JPEG frame.
+ * @brief  Copy the most recent frame that contained a detection.
  *
- * Returns a malloc'd buffer the caller must free, or NULL if no frame has
- * arrived yet. Frames are only retained while VISION_KEEP_FRAMES is set.
+ * The frame is base64 JPEG *text*, NUL-terminated — the form SSCMA delivers it
+ * in and the form both vision APIs want, so it is never decoded on the way
+ * through. Frames are only retained while VISION_KEEP_FRAMES is set.
+ *
+ * @param out_size    receives the length excluding the NUL; may be NULL.
+ * @param max_age_ms  reject a frame older than this; <= 0 accepts any age.
+ * @return malloc'd buffer the caller must free, or NULL if there is no frame
+ *         new enough to be worth acting on.
  */
-uint8_t *vision_take_frame(int *out_size);
+char *vision_take_frame(int *out_size, int max_age_ms);
 
 /** Human-readable label for a detected class index, or NULL. */
 const char *vision_class_name(int target);

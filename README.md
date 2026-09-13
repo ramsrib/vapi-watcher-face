@@ -142,6 +142,7 @@ main/
   vapi_media.c/.h audio: direct codec I/O, gain staging, echo gate
   vapi_app.c      call state -> expression mapping
   vision.c/.h     Himax NPU: inference, presence detection, frame capture
+  vlm.c/.h        frame -> sentence, via Anthropic or OpenAI
   model_flash.c/.h  one-shot: put an AI model on the Himax
   wifi.c          station bring-up
   settings.h      all tuning knobs, each with its measured justification
@@ -166,10 +167,9 @@ treatment of why gating beats cancelling.
 
 ## Vision
 
-The NPU path works: the Himax is queried, inference runs continuously, and
-presence detection wakes a Vapi call. **One thing is unresolved — the camera
-returns black frames**, so no detection has ever fired. That looks physical
-rather than software (see below).
+The NPU path works end to end: the Himax is queried, inference runs
+continuously, people are detected, and walking up to the device starts a Vapi
+call on its own. Detections score 50-87% in ordinary room light.
 
 What comes up now, in 2.4 s from power-on:
 
@@ -235,21 +235,116 @@ device. The SDK example selects slot 1 and the factory firmware selects slot 4;
 both return `ESP_FAIL` here, because the loaded model is in neither. Removing
 the call is what let `invoke` succeed.
 
-### The remaining problem: black frames
+### The black frames were a lens cap
 
-A frame captured off the device decodes to a valid 416x416 JPEG that is almost
-entirely black, with a faint shape in the centre. The model is not failing — it
-has nothing to see.
+An early frame pulled off the device decoded to a valid 416x416 JPEG that was
+almost entirely black. The model was not failing — it had nothing to see. There
+is no exposure control in the SSCMA AT command set (`AT+SENSOR` takes only
+id/enable/opt_id), so brightness is the sensor's business and not something
+firmware can correct. Uncovering the lens fixed it.
 
-This looks physical: a protective film still on the lens, something covering it,
-or the device pointing somewhere dark. There is no exposure control in the SSCMA
-AT command set (`AT+SENSOR` takes only id/enable/opt_id), so brightness is the
-sensor's own business and not something firmware can correct.
+Worth keeping as a habit: `VISION_DUMP_FRAME` prints one base64 JPEG over the
+console at startup. Reassembling it on the host answers "is the camera seeing
+anything" in one step, which no amount of reading detection scores does.
 
-To re-test: `VISION_KEEP_FRAMES 1` retains the JPEG, and a frame can be pulled
-out with `sscma_utils_fetch_image_from_reply()`. `MIN_SCORE` (40) has never been
-validated against a real detection and should be tuned once the camera sees
-something.
+`MIN_SCORE` is 40 and real detections land at 50-87%, so it is clearing but has
+never been pushed against a false positive.
+
+## Seeing, not just noticing
+
+Detection answers *that* someone is there. It cannot say anything about them,
+and for a device whose whole trick is reacting to people, that gap is most of
+the act: "hello there" is a toy, "nice orange hoodie" is a thing people call
+their friends over to see.
+
+So a frame goes to a vision model and comes back as a sentence.
+
+### Why it has to be a separate call
+
+Vapi's `add-message` carries a plain string — `OpenAIMessage.content` is typed
+as a string, not a multimodal content array — so the image cannot be handed to
+the assistant's own model even though that model can see. The caption has to be
+produced by a second request and injected as text.
+
+### The greeting never waits for it
+
+This is the part that matters for a demo. The obvious pipeline — caption, then
+start the call — puts a vision model's round trip between a person walking up
+and the device saying anything, which is exactly the silence that makes a booth
+demo look broken.
+
+Instead:
+
+```
+person detected ──> call starts immediately ──> "oh, hello!"   (firstMessage)
+                └──> caption_task (parallel) ──> add-message ──> "nice hoodie"
+```
+
+The description lands a second or two later, in time for the second turn. Three
+things follow from that, all of them good:
+
+- **provider latency stops mattering.** Nothing is waiting on it.
+- **failure is invisible.** No caption means the assistant simply never mentions
+  appearance. That is why there is one attempt and an 8 s timeout, not a retry
+  loop — a late caption is worse than none, because the assistant would remark
+  on someone who has already walked off.
+- **it is better theatre anyway.** Greeting first, observation second, is how a
+  person does it.
+
+### What it costs to run
+
+Almost nothing, because the NPU decides what leaves the board. A frame is sent
+once per arrival — roughly one request per visitor, not one per frame — and the
+image never leaves PSRAM on the way out. There is also no encode step: SSCMA
+already delivers the JPEG as base64 text inside its JSON reply, which is the
+exact form both vision APIs want, so the string goes from the SPI reply into the
+request body untouched.
+
+Frames are retained only when a detection cleared `MIN_SCORE`, at most one per
+second, into a single buffer that is grown and reused. Retaining every frame
+meant a ~30 KB copy ten times a second in exchange for pictures of an empty
+room.
+
+### Anthropic or OpenAI
+
+Both are compiled in; `VLM_PROVIDER_ANTHROPIC` in `settings.h` picks one. The
+default is Anthropic, and the reasons are operational rather than about model
+quality — one sentence about one person in one small frame is not where frontier
+models separate:
+
+- Anthropic takes the base64 JPEG verbatim in its own `source.data` field;
+  OpenAI wants it wrapped in a `data:image/jpeg;base64,` URI.
+- Anthropic's `max_tokens` has been stable; OpenAI renamed theirs to
+  `max_completion_tokens` on the newer models, and the old name is rejected.
+
+Fewer things to be wrong about on venue wifi. Having the second path one
+`#define` away is the actual point: at a booth, a provider you can switch to in
+a reflash is worth more than whichever one benchmarks better today.
+
+The model is `claude-sonnet-5`, which is a deliberate exception to reaching for
+the strongest model available. The task is a 20-word description of a person
+standing two feet from a camera — Sonnet does that as well as Opus — and the
+result is spoken aloud in a live conversation, where a second of latency is
+audible and a point of caption quality is not. Swap `VLM_MODEL` to
+`"claude-opus-5"` if a caption ever disappoints; nothing else changes.
+
+### Setting it up
+
+Put a key in `.env`:
+
+```
+ANTHROPIC_API_KEY="sk-ant-..."
+```
+
+Leave it blank and everything still works — the device greets people it sees, it
+just never comments on how they look. Same DEV ONLY caveat as the Vapi key: it
+is compiled into the image and recoverable from a flash dump.
+
+The prompt lives in `VLM_PROMPT` and is written for a caption that will be
+*spoken*: no hedging, no inventory of the room, no mention of the camera. It
+also tells the model to ignore orientation, because the Watcher is easy to mount
+rotated and without that line the model spends its one sentence observing that
+the person is lying down.
 
 ## Roadmap
 
@@ -261,11 +356,9 @@ something.
 3. **Wire the face to call state** — the echo gate's write-ahead playout clock is
    already a sample-accurate "is the assistant audible" signal, which is exactly
    what drives `speaking` and the mouth.
-4. **Add vision** — inference runs; blocked on the camera returning black
-   frames, which looks physical. See above. Once it sees something, presence
-   detection already wakes a call and `sscma_utils_fetch_image_from_reply()`
-   gets a JPEG to a VLM for injection via Vapi `add-message`. Once a model is loaded, presence detection already wakes a call, and
-   `sscma_utils_fetch_image_from_reply()` gets a JPEG to a VLM for injection via
-   Vapi `add-message`.
+4. ~~**Add vision**~~ **done** — inference runs, presence detection wakes a
+   call on its own, and the frame that triggered it is captioned by a vision
+   model and injected via Vapi `add-message` while the greeting is already
+   playing.
 5. Custom art, then an enclosure — and re-measure the acoustics, because a plush
    changes them completely.
