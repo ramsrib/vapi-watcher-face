@@ -40,6 +40,7 @@ typedef struct {
     sscma_client_handle_t client;
     bool                  up;
     volatile bool         present;
+    volatile bool         seen_ever;
     volatile int          score;
     volatile uint32_t     last_seen_ms;
     volatile uint32_t     last_absent_ms;
@@ -141,34 +142,49 @@ static void on_event(sscma_client_handle_t client,
     /* Rate-limited heartbeat. Worth keeping: "no detections" is otherwise
      * ambiguous between no events arriving, events with no boxes, and boxes
      * below threshold — three very different faults. At 10 s it is cheap. */
-    static uint32_t last_log, events;
+    static uint32_t last_log, events, win_hits;
+    static int win_best;
     events++;
+    if (count > 0)   win_hits++;
+    if (best > win_best) win_best = best;
     uint32_t t = now_ms();
     if ((uint32_t)(t - last_log) > 10000) {
         last_log = t;
-        ESP_LOGI(TAG, "inference alive: %lu events/10s, boxes=%d best=%d (threshold %d)",
-                 (unsigned long)events, count, best, MIN_SCORE);
-        events = 0;
+        /* Max over the window, not the instantaneous frame. Reporting the frame
+         * that happened to coincide with the log makes a working detector look
+         * dead whenever the subject blinks out for one frame. */
+        ESP_LOGI(TAG, "inference alive: %lu events/10s, frames with a box: %lu, best score: %d (threshold %d)",
+                 (unsigned long)events, (unsigned long)win_hits, win_best, MIN_SCORE);
+        events = 0; win_hits = 0; win_best = 0;
     }
 
     v.score = best;
 
     if (best >= MIN_SCORE) {
-        bool was_away = !v.present || (t - v.last_absent_ms) < PRESENCE_HOLD_MS;
+        /* The very first sighting is always an arrival.
+         *
+         * This needs its own flag rather than leaning on the gap. `last_seen_ms`
+         * starts at 0, so at boot the gap is simply the uptime — and since
+         * detection begins ~2.5 s after power-on, that gap is *smaller* than
+         * ABSENCE_MS, not larger. The first person to walk up therefore set
+         * `present` without ever being announced, and no further arrival could
+         * fire while they stayed in frame. */
         uint32_t gap = t - v.last_seen_ms;
+        bool first = !v.seen_ever;
+        v.seen_ever = true;
         v.last_seen_ms = t;
         if (!v.present) {
             v.present = true;
-            /* Only call it an arrival if the gap was long enough to mean the
-             * person actually left, not that we simply missed a few frames. */
-            if (gap > ABSENCE_MS) {
+            /* Otherwise only count it as an arrival if they were gone long
+             * enough to have actually left, rather than being missed for a
+             * frame or two. */
+            if (first || gap > ABSENCE_MS) {
                 ESP_LOGI(TAG, "person arrived (score %d)", best);
                 if (v.on_presence) {
                     v.on_presence();
                 }
             }
         }
-        (void)was_away;
     } else if (v.present && (t - v.last_seen_ms) > PRESENCE_HOLD_MS) {
         v.present = false;
         v.last_absent_ms = t;
@@ -194,8 +210,8 @@ int vision_init(void)
     if (v.frame_lock == NULL) {
         return -1;
     }
-    /* Start "absent long ago" so the first sighting counts as an arrival. */
     v.last_seen_ms = 0;
+    v.seen_ever = false;
 
     v.client = bsp_sscma_client_init();
     if (v.client == NULL) {
