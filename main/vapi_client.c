@@ -790,7 +790,8 @@ static int send_message(const char *text, bool trigger)
     cJSON *root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "type", "add-message");
     cJSON *message = cJSON_AddObjectToObject(root, "message");
-    cJSON_AddStringToObject(message, "role", "system");
+    cJSON_AddStringToObject(message, "role",
+                            trigger ? "system" : VLM_CONTEXT_ROLE);
     cJSON_AddStringToObject(message, "content", text ? text : "");
     cJSON_AddBoolToObject(root, "triggerResponseEnabled", trigger);
     char *s = cJSON_PrintUnformatted(root);

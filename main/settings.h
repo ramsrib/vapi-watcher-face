@@ -414,8 +414,14 @@ extern "C" {
 #define VAPI_TRANSIENT_ASSISTANT (1)
 
 /** Voice. Any provider/voiceId pair Vapi accepts. */
-#define VAPI_VOICE_PROVIDER "vapi"
-#define VAPI_VOICE_ID       "Elliot"
+/* ElevenLabs preset voices Vapi accepts by name: burt, marissa, andrea, sarah,
+ * phillip, steve, joseph, myra, paula, ryan, drew, paul, mrb, matilda, mark.
+ * Any 11Labs voice ID also works, provided it is in your own Voice Library.
+ *
+ * matilda is the warm, young-sounding one — the closest of the presets to a
+ * character rather than a narrator, which is what a face in a plush needs. */
+#define VAPI_VOICE_PROVIDER "11labs"
+#define VAPI_VOICE_ID       "matilda"
 
 /** Transcriber. */
 #define VAPI_TRANSCRIBER_PROVIDER "deepgram"
@@ -441,8 +447,9 @@ extern "C" {
     "front of you. " \
     "Messages tagged [device context] are your own eyes reporting what you " \
     "see. Treat them as your own perception, never as something someone told " \
-    "you. Never say you cannot see, never mention a camera, a device, an " \
-    "image or analysis, and never read the tag aloud. " \
+    "you. Never say you cannot see, and never mention a camera, a device, an " \
+    "image, a description or analysis — the things in them are simply what is " \
+    "in front of you. Never read the tag aloud. " \
     "They update as things change, so the newest one is what is true now. " \
     "They describe the whole scene, so pick out what is worth remarking on and " \
     "ignore the rest. Use their actual words for things — the colour, the " \
@@ -459,8 +466,11 @@ extern "C" {
     "spoken sentences. When you notice something about how someone looks, " \
     "mention it once, kindly and specifically, then move on and ask them " \
     "something. Do not compliment repeatedly or describe them in a list. " \
-    "Never announce your senses. Do not say you can see or hear someone; just " \
-    "respond to what they look like and say, the way a person does. " \
+    "Describing what you see is the point — do it often and specifically. " \
+    "What to avoid is announcing the ability itself: never open with, or " \
+    "volunteer, that you can see and hear. Say 'nice tennis ball' and 'that " \
+    "green jacket suits you', never 'I can see you'. Remark on the thing, not " \
+    "on your having noticed it. " \
     "You are at a conference booth, so people will walk up, chat briefly and " \
     "leave. Never mention being an AI, a model, or an assistant."
 
@@ -535,6 +545,22 @@ extern "C" {
 /** How long after boot the self-test call is placed. Long enough for WiFi to
  *  settle on a slow association; see the 9.6 s DHCP measured on this board. */
 #define VAPI_SELFTEST_CALL_AFTER_MS (12000)
+
+/**
+ * @brief  Message role for camera descriptions.
+ *
+ * "system" is the honest label — this is context, not speech. But a mid-
+ * conversation system message is the one an LLM is most willing to skim, and
+ * the symptom when it does is subtle: the assistant answers plausibly without
+ * ever using what it was given.
+ *
+ * "user" is attended to reliably, at the cost of a small lie about who spoke.
+ * The [device context] tag and the system prompt between them are what keep it
+ * from being read as something the person said.
+ *
+ * Valid: assistant, function, user, system, tool.
+ */
+#define VLM_CONTEXT_ROLE "user"
 
 /**
  * @brief  How often to look again during a call.
