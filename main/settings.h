@@ -459,6 +459,39 @@ extern "C" {
 #define VLM_SELFTEST (1)
 
 /**
+ * @brief  Place one call automatically after boot, with nobody present.
+ *
+ * For bring-up and for measuring. The call path is the tightest moment this
+ * board ever sees — POST /call, then a websocket TLS session held open, the
+ * audio buffers, and a caption handshake on top — and it is also the one path
+ * that normally cannot be exercised without a person standing in front of the
+ * camera. That makes the riskiest code the hardest to test, which is backwards.
+ *
+ * With this on, a fresh firmware proves the whole chain on its own: call
+ * creation, transport, codecs, and the heap trough underneath all of it.
+ *
+ * Off by default — it places a real, billable call on every boot.
+ */
+#define VAPI_SELFTEST_CALL (0)
+
+/** How long after boot the self-test call is placed. Long enough for WiFi to
+ *  settle on a slow association; see the 9.6 s DHCP measured on this board. */
+#define VAPI_SELFTEST_CALL_AFTER_MS (12000)
+
+/**
+ * @brief  Let the call settle before the caption request handshakes.
+ *
+ * Not a pacing tweak — a memory one. Opening the websocket allocates its TLS
+ * session and the audio buffers at the same moment, and starting a second TLS
+ * handshake on top of that burst is what drove free internal heap to 7 KB and
+ * made SPI DMA allocations fail elsewhere on the board.
+ *
+ * Costs nothing visible: the greeting is still playing, and the description is
+ * only needed by the second turn.
+ */
+#define VLM_SETTLE_MS (1200)
+
+/**
  * @brief  How stale a frame may be and still be worth describing.
  *
  * Generous relative to the call it serves: the frame that triggered the call is

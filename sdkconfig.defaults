@@ -36,3 +36,21 @@ CONFIG_FREERTOS_HZ=1000
 # responsive.
 CONFIG_SSCMA_PROCESS_TASK_STACK_SIZE=10240
 CONFIG_SSCMA_PROCESS_TASK_AFFINITY_CPU1=y
+
+# --- TLS memory ---------------------------------------------------------------
+# Internal RAM is the scarce resource on this board, and TLS is what eats it.
+# Measured low-water mark of free internal heap, same firmware, same boot:
+#
+#   boot + one TLS session (the caption selftest)        99,406 bytes
+#   boot + a call (POST /call, websocket, caption)        7,478 bytes
+#
+# Three concurrent sessions at ~30 KB each is most of the difference. At 7 KB
+# the failures are not allocation errors in our code — they are SPI DMA
+# descriptors failing to allocate elsewhere, which surfaced as 100 dropped
+# Himax transactions and a glitching display every time a call started.
+#
+# By default mbedTLS allocates the full IN/OUT content buffers for the life of
+# each session. With dynamic buffers it allocates them per record and frees them
+# in between, so an idle websocket stops holding ~20 KB it is not using — which
+# is exactly the 20 KB the caption request's handshake needs.
+CONFIG_MBEDTLS_DYNAMIC_BUFFER=y

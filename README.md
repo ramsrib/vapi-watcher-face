@@ -382,6 +382,48 @@ also tells the model to ignore orientation, because the Watcher is easy to mount
 rotated and without that line the model spends its one sentence observing that
 the person is lying down.
 
+## Internal RAM is the constraint, and TLS is what spends it
+
+Measured low-water mark of free internal heap, same firmware, same boot:
+
+| scenario | before | after |
+|---|---|---|
+| boot + one TLS session (caption selftest) | 99,406 | 99,398 |
+| boot + a call (POST, websocket, caption) | **7,478** | **59,770** |
+| SPI transactions failed during call setup | 100 | **0** |
+
+At 7 KB the failures did not appear in this code at all. They appeared as SPI
+DMA descriptors failing to allocate elsewhere on the board:
+
+```
+E sscma_client.io.spi: client_io_spi_read(353): spi transmit (queue) failed   (x100)
+E lcd_panel.io.spi: panel_io_spi_tx_color(395): spi transmit (queue) color failed
+```
+
+— a glitching display and a hundred dropped Himax transactions every time a call
+started, with nothing pointing at the cause. That indirection is the thing worth
+remembering: on this board, memory pressure is reported by whichever unrelated
+subsystem happens to need DMA next.
+
+Two changes, and the first is most of it:
+
+**`CONFIG_MBEDTLS_DYNAMIC_BUFFER=y`.** By default mbedTLS holds the full IN/OUT
+content buffers for the life of each session, so an idle websocket sits on
+~20 KB it is not using — which is exactly the 20 KB the caption request's
+handshake needs. With dynamic buffers they are allocated per record and freed in
+between. Note it does nothing for the single-session case (99,406 → 99,398);
+the win is entirely in concurrency.
+
+**`VLM_SETTLE_MS`.** The caption task waits 1.2 s before its handshake, so it is
+not competing with the websocket's own TLS session and the audio buffers landing
+at the same instant. Free, because the greeting is still playing.
+
+`VAPI_SELFTEST_CALL` places one call automatically after boot with nobody
+present. The call path is both the tightest moment the board sees and the one
+that normally cannot be tested without a person in front of the camera — which
+makes the riskiest code the hardest to exercise. It is off by default because it
+places a real, billable call on every boot.
+
 ## Roadmap
 
 1. ~~Prove the toolchain; face on the display~~ **done**

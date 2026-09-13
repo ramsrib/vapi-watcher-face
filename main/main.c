@@ -85,6 +85,23 @@ static void on_person_arrived(void)
     vapi_toggle_call();
 }
 
+#if VAPI_SELFTEST_CALL
+/* Place one call after boot with nobody present, to exercise the path that
+ * normally needs a person in front of the camera. See VAPI_SELFTEST_CALL. */
+static void selftest_call_task(void *arg)
+{
+    (void)arg;
+    vTaskDelay(pdMS_TO_TICKS(VAPI_SELFTEST_CALL_AFTER_MS));
+    if (network_is_connected() && !vapi_call_is_active()) {
+        ESP_LOGW(TAG, "selftest call — exercising the call path with nobody here");
+        vapi_toggle_call();
+    } else {
+        ESP_LOGW(TAG, "selftest call skipped (offline, or a call is already up)");
+    }
+    vTaskDelete(NULL);
+}
+#endif
+
 /* The knob button is the only physical control. A press toggles the call; a
  * long press mutes the microphone. */
 static void button_task(void *arg)
@@ -147,6 +164,10 @@ void app_main(void)
 
     wifi_start(WIFI_SSID, WIFI_PASSWORD);
     xTaskCreate(button_task, "button", 3072, NULL, 5, NULL);
+
+#if VAPI_SELFTEST_CALL
+    xTaskCreate(selftest_call_task, "call_test", 3072, NULL, 3, NULL);
+#endif
 
     ESP_LOGI(TAG, "ready — press the knob to start a call");
     int tick = 0;

@@ -204,8 +204,14 @@ int vlm_describe(const char *b64, char *out, size_t out_sz)
 #endif
     esp_http_client_set_post_field(h, body, n);
 
+    /* Internal heap around the request, because this is where it is scarcest:
+     * a TLS handshake on top of a live call is the tightest moment the board
+     * ever sees, and the symptom when it goes wrong is not an error here but
+     * SPI DMA failing somewhere else entirely. */
+    size_t heap_before = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
     int64_t t0 = esp_timer_get_time();
     esp_err_t err = esp_http_client_perform(h);
+    size_t heap_low = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
     int status = esp_http_client_get_status_code(h);
     int ms = (int)((esp_timer_get_time() - t0) / 1000);
     esp_http_client_cleanup(h);
@@ -219,8 +225,9 @@ int vlm_describe(const char *b64, char *out, size_t out_sz)
     } else {
         rc = extract_caption(resp, out, out_sz);
         if (rc == 0) {
-            ESP_LOGI(TAG, "%s in %d ms (%u KB image): %s",
-                     VLM_MODEL, ms, (unsigned)(b64_len / 1024), out);
+            ESP_LOGI(TAG, "%s in %d ms (%u KB image, internal heap %u -> %u): %s",
+                     VLM_MODEL, ms, (unsigned)(b64_len / 1024),
+                     (unsigned)heap_before, (unsigned)heap_low, out);
         }
     }
     free(resp);

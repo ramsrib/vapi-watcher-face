@@ -219,6 +219,10 @@ static void caption_task(void *arg)
     char *b64 = NULL;
     int   size = 0;
 
+    /* Let the websocket's own TLS session and the audio buffers finish landing
+     * before adding a second handshake on top of them. See VLM_SETTLE_MS. */
+    vTaskDelay(pdMS_TO_TICKS(VLM_SETTLE_MS));
+
     /* The frame is captured on detection, and detection is what started this
      * call, so one is normally already waiting. Allow a couple of seconds for
      * the case where the call was started by hand and the Himax has not yet
