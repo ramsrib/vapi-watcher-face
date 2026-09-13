@@ -69,6 +69,29 @@ This is a host-side limit, not a board fault — and it is why Seeed's documente
 driver and no Linux machine are needed**, contrary to where the symptoms first
 point.
 
+## Audio: why there is no AEC here
+
+This board has **two codecs** — ES8311 for the speaker, ES7243/ES7243E for the
+microphone. Boards where one chip serves both directions can loop the DAC back
+into the ADC as an echo reference; with two chips that reference does not exist,
+so on-device acoustic echo cancellation has nothing to cancel against.
+
+That turned out not to matter. On the AtomS3R, where an AEC *was* available, it
+contributed almost nothing — echo was actually solved by **hard-muting the
+microphone whenever the assistant is audible**, timed off a write-ahead playout
+clock. That technique needs no reference signal, so it ports here unchanged.
+
+Dropping the AEC also let `esp_capture`, `av_render` and the whole
+esp-webrtc-solution dependency fall away in favour of direct `esp_codec_dev`
+reads and writes. The gate is *more* accurate as a result: we own every write to
+the codec, so the playout clock is exact rather than inferred from a render
+FIFO — which on the AtomS3R reported 0 and silently broke the first attempt.
+
+Verified on hardware: across a full conversation, every transcribed `user:` turn
+was the actual speaker and none was an echo of the preceding `assistant:` line.
+
+The cost is **no barge-in** — talking over the assistant does nothing.
+
 ## Gotchas, all of which cost real time
 
 **The I2C driver conflict aborts before `app_main`.** IDF runs
@@ -111,17 +134,34 @@ with others` at boot — the LCD backlight PWM. Brightness control via
 
 ```
 main/
-  main.c        entry point, expression demo loop
-  face.c/.h     the face: LVGL drawing + expression state machine
-  palette.h     colour tokens, RGB565-verified
+  main.c          entry point, boot sequence, knob button
+  face.c/.h       the face: LVGL drawing + expression state machine
+  palette.h       colour tokens, RGB565-verified
+  vapi_client.c   REST call creation + websocket transport (ported verbatim)
+  vapi_media.c/.h audio: direct codec I/O, gain staging, echo gate
+  vapi_app.c      call state -> expression mapping
+  vision.c/.h     Himax NPU: inference, presence detection, frame capture
+  model_flash.c/.h  one-shot: put an AI model on the Himax
+  wifi.c          station bring-up
+  settings.h      all tuning knobs, each with its measured justification
 tools/
-  flash.py      CH342-safe flasher (see above)
+  flash.py        CH342-safe flasher — use this, not `idf.py flash`
+  gen_env_header.py  .env -> compile-time defines
 components/
-  esp_codec_dev vendored 1.3.6, for the I2C compat knob
+  esp_codec_dev   vendored 1.3.6, for the I2C compat knob
 ```
 
-Device bring-up notes, the flash backup and the capability survey live in
-[`../sensecap-watcher/`](../sensecap-watcher/).
+Device-level knowledge — hardware inventory, the dual USB ports, the verified
+stock backup, the Himax console, audio architecture — lives in
+[`../sensecap-watcher/`](../sensecap-watcher/). Start at its
+[README](../sensecap-watcher/README.md).
+
+The voice transport and echo-gate technique came from
+[`../vapi-atoms3r-voice`](../vapi-atoms3r-voice), which is the same idea on an
+M5Stack AtomS3R and is published at
+<https://github.com/ramsrib/vapi-atoms3r-voice>. Its
+[`docs/AEC-TUNING.md`](../vapi-atoms3r-voice/docs/AEC-TUNING.md) is the fuller
+treatment of why gating beats cancelling.
 
 ## Vision: model flashed, inference still not starting
 
