@@ -44,6 +44,33 @@ static void log_heap(void)
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
 }
 
+static void vision_task(void *arg)
+{
+    if (vision_init() == 0) {
+        ESP_LOGI(TAG, "vision ready");
+    } else {
+        ESP_LOGW(TAG, "running without vision — face and voice are unaffected");
+    }
+    vTaskDelete(NULL);
+}
+
+/* Someone walked up. Start a call if we are idle and online — the whole point
+ * of the device is that it notices you rather than waiting to be pressed.
+ * Runs on the Himax client's task, so it must not block; vapi_toggle_call()
+ * already dispatches the slow part to a worker. */
+static void on_person_arrived(void)
+{
+    if (!network_is_connected()) {
+        return;
+    }
+    if (vapi_call_is_active()) {
+        return;
+    }
+    ESP_LOGI(TAG, "someone arrived — starting a call");
+    face_set_state(FACE_DETECTING);
+    vapi_toggle_call();
+}
+
 /* The knob button is the only physical control. A press toggles the call; a
  * long press mutes the microphone. */
 static void button_task(void *arg)
@@ -81,11 +108,28 @@ void app_main(void)
     ESP_ERROR_CHECK(err);
 
     bsp_io_expander_init();
+
+    /* Vision runs on its own task rather than inline.
+     *
+     * Every sscma command retries for ~20 s before timing out, and on a device
+     * with no model loaded they all fail — which would otherwise hold up boot
+     * for a minute and delay WiFi with it. Backgrounding it means the face and
+     * voice come up immediately and vision simply reports whether it made it.
+     *
+     * It also still runs before the display: the Himax handshake is timing
+     * sensitive, and the face's 20 Hz redraw is enough to starve the sscma
+     * task (seen as "request not found", then timeouts). */
+    xTaskCreate(vision_task, "vision_init", 5120, NULL, 6, NULL);
+
     face_init();
     vapi_media_init();
     vapi_client_init();
     vapi_app_init();
     log_heap();
+
+#if VISION_WAKE_ON_PRESENCE
+    vision_on_presence(on_person_arrived);
+#endif
 
     wifi_start(WIFI_SSID, WIFI_PASSWORD);
     xTaskCreate(button_task, "button", 3072, NULL, 5, NULL);

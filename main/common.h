@@ -7,6 +7,7 @@
 #include "settings.h"
 #include "face.h"
 #include "vapi_media.h"
+#include "vision.h"
 #include "esp_timer.h"
 
 #ifdef __cplusplus

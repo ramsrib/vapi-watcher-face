@@ -4,4 +4,5 @@ idf_component_register(SRCS "main.c"
                             "vapi_client.c"
                             "vapi_app.c"
                             "wifi.c"
+                            "vision.c"
                        INCLUDE_DIRS ".")

@@ -212,6 +212,34 @@ extern "C" {
 #define VAPI_ECHO_GATE_THRESHOLD (300)
 
 /**
+ * @brief  Wake a call when the camera sees someone.
+ *
+ * The Himax runs detection locally and continuously, so this costs nothing per
+ * frame — unlike waiting for a wake word, which would need the microphone open
+ * the whole time.
+ */
+#define VISION_WAKE_ON_PRESENCE (1)
+
+/**
+ * @brief  Keep the most recent JPEG frame in memory.
+ *
+ * Needed to show a cloud VLM what the device saw. Costs PSRAM per frame and
+ * makes the Himax push the image over SPI on every inference, so leave it off
+ * until the VLM path is actually wired up.
+ */
+#define VISION_KEEP_FRAMES (0)
+
+/**
+ * @brief  Ask the Himax to identify itself and its model at startup.
+ *
+ * Off because it does not work here and is expensive to find out: this device's
+ * Himax firmware never answers NAME?/VERSION?, and sscma_client retries for
+ * ~20 seconds per query before giving up. Purely diagnostic — inference runs
+ * fine without it.
+ */
+#define VISION_QUERY_INFO (0)
+
+/**
  * @brief  Default speaker volume (0-100). The codec accepts up to 100; 90
  *         leaves a little headroom against distortion and current draw.
  *
