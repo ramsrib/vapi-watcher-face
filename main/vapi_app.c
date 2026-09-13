@@ -26,6 +26,7 @@ static bool s_have_wifi;
 static bool s_mic_muted;
 static uint32_t s_last_voice_ms;
 static uint32_t s_last_call_end_ms;
+static uint32_t s_last_present_ms;
 static bool     s_call_was_active;
 
 /* How long after the last activity the face drifts off to sleep. */
@@ -274,7 +275,20 @@ void vapi_on_call_connected(void)
 /* --- actions, bound to the knob button ------------------------------------ */
 
 /* Call open/close is slow — a blocking HTTPS POST plus a TLS handshake — so it
- * never runs on the caller's task. */
+ * never runs on the caller's task.
+ *
+ * Which creates a window: for the ~2 s the worker is running, the call is being
+ * opened but vapi_call_is_active() is still false. Anything that decides what
+ * to do by asking that question will decide wrongly, repeatedly. The presence
+ * poll runs every 2 s and did exactly that — a new Vapi call every tick, each
+ * one billable, for as long as someone stood in front of the camera.
+ *
+ * So "a call is in progress" has to mean *including while it is being set up*,
+ * which is what s_call_pending adds. The edge-triggered arrival callback never
+ * exposed this because it only ever fired once. */
+static volatile bool s_call_pending;
+static portMUX_TYPE s_call_mux = portMUX_INITIALIZER_UNLOCKED;
+
 static void call_op_worker(void *arg)
 {
     bool start = (bool)(intptr_t)arg;
@@ -287,6 +301,7 @@ static void call_op_worker(void *arg)
         vapi_call_stop();
         s_mic_muted = false;
     }
+    s_call_pending = false;
     vapi_refresh_display();
     vTaskDelete(NULL);
 }
@@ -316,13 +331,29 @@ void vapi_presence_poll(void)
     uint32_t t = (uint32_t)(esp_timer_get_time() / 1000);
 
     /* Watch for a call ending so the cooldown can run from that moment. */
-    bool active = vapi_call_is_active();
+    bool active = vapi_call_is_active() || s_call_pending;
     if (s_call_was_active && !active) {
         s_last_call_end_ms = t;
     }
     s_call_was_active = active;
 
-    if (active || !s_have_wifi || !network_is_connected()) {
+    if (active) {
+        /* Hang up on a visitor who has gone. See HANGUP_AFTER_ABSENT_MS. */
+        if (vision_available() && vision_person_present()) {
+            s_last_present_ms = t;
+        } else if (s_last_present_ms &&
+                   (t - s_last_present_ms) > HANGUP_AFTER_ABSENT_MS &&
+                   !vapi_media_far_end_active()) {
+            ESP_LOGI(TAG, "nobody there any more — ending the call");
+            vapi_toggle_call();
+        }
+        return;
+    }
+    /* Idle: keep the clock current so an arrival does not inherit a stale
+     * absence and hang itself up moments after connecting. */
+    s_last_present_ms = t;
+
+    if (!s_have_wifi || !network_is_connected()) {
         return;
     }
     if (!vision_person_present()) {
@@ -340,9 +371,27 @@ void vapi_presence_poll(void)
 
 void vapi_toggle_call(void)
 {
-    bool want_start = !vapi_call_is_active();
-    xTaskCreate(call_op_worker, "call_op", 8192,
-                (void *)(intptr_t)want_start, 10, NULL);
+    /* Claim the transition before dispatching. Two tasks reach this — the main
+     * loop's presence poll and the button task — so the test and the claim have
+     * to be one operation, or both can pass it. */
+    bool want_start;
+    portENTER_CRITICAL(&s_call_mux);
+    bool busy = s_call_pending;
+    if (!busy) {
+        s_call_pending = true;
+        want_start = !vapi_call_is_active();
+    }
+    portEXIT_CRITICAL(&s_call_mux);
+
+    if (busy) {
+        ESP_LOGD(TAG, "call transition already in flight — ignoring");
+        return;
+    }
+    if (xTaskCreate(call_op_worker, "call_op", 8192,
+                    (void *)(intptr_t)want_start, 10, NULL) != pdPASS) {
+        ESP_LOGE(TAG, "could not spawn call worker");
+        s_call_pending = false;
+    }
 }
 
 void vapi_toggle_mute(void)

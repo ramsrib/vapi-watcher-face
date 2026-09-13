@@ -434,6 +434,25 @@ extern "C" {
 #define VAPI_GREETING "Oh, hello there!"
 
 /**
+ * @brief  Hang up once someone has been out of frame this long.
+ *
+ * Without this a call outlives its visitor. Nothing else ends one — the knob
+ * does, and Vapi's own maxDuration eventually does, but neither is connected to
+ * whether anyone is still there.
+ *
+ * At a booth that compounds rather than merely wastes minutes. The presence
+ * poll declines to start a call while one is already active, so the visitor
+ * after the one who wandered off does not get a greeting: they are dropped into
+ * the previous conversation, mid-context, carrying the previous person's
+ * description. Every visitor after the first is wrong until the timeout expires.
+ *
+ * Ten seconds against a measured worst-case detection gap of ~2 s, so a person
+ * leaning out of shot is never cut off. The check also waits for the assistant
+ * to stop talking, so a goodbye finishes rather than being truncated.
+ */
+#define HANGUP_AFTER_ABSENT_MS (10000)
+
+/**
  * @brief  After a call ends, how long before presence may start another.
  *
  * Without this the presence poll would re-greet whoever is still standing there

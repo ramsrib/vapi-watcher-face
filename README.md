@@ -382,6 +382,38 @@ also tells the model to ignore orientation, because the Watcher is easy to mount
 rotated and without that line the model spends its one sentence observing that
 the person is lying down.
 
+## A booth is a queue, not one conversation
+
+Two bugs that only matter once the second visitor walks up, which is to say:
+every real use of this device.
+
+**The call outlived the visitor.** Nothing ended a call when someone left —
+`vision.c` logged `person left` and did nothing with it, and the only
+`vapi_call_stop()` was the knob. That is worse than wasted minutes, because the
+presence poll declines to start a call while one is active: visitor two got no
+greeting and was dropped into visitor one's conversation, mid-context, carrying
+visitor one's description. `HANGUP_AFTER_ABSENT_MS` ends the call ten seconds
+after the last detection, waiting for the assistant to stop talking first so a
+goodbye is not truncated.
+
+**The poll started a new call every tick.** `vapi_toggle_call()` dispatches to a
+worker, so for the ~2 s of HTTPS POST and TLS handshake the call is being opened
+while `vapi_call_is_active()` is still false. The presence poll asked that
+question every 2 s and answered it wrongly each time: a fresh billable Vapi call
+per tick, for as long as anyone stood there. Measured four calls in six seconds
+before the guard.
+
+The fix is that "a call is in progress" has to include *while it is being set
+up*. `s_call_pending` is claimed inside a critical section, because two tasks
+reach `vapi_toggle_call()` — the presence poll and the button — and the test and
+the claim have to be one operation or both pass it.
+
+Worth noting the edge-triggered arrival callback hid this completely: it fired
+once, so it could not race itself. Moving to a level-triggered poll is what made
+the window reachable, and the same change is what fixed the lost-arrival bug
+above. Level-triggered logic is more robust about *what* it decides and much
+less forgiving about *when*.
+
 ## Internal RAM is the constraint, and TLS is what spends it
 
 Measured low-water mark of free internal heap, same firmware, same boot:
