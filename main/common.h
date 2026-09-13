@@ -51,6 +51,11 @@ void vapi_on_call_connected(void);
 void vapi_refresh_display(void);
 void vapi_set_wifi_state(bool connected);
 void vapi_toggle_call(void);
+
+/** Tick from the main loop: starts a call when someone is present, we are idle
+ *  and online. The safety net under the arrival callback, which is edge-
+ *  triggered and can be lost if the network is not up when it fires. */
+void vapi_presence_poll(void);
 void vapi_toggle_mute(void);
 bool vapi_is_mic_muted(void);
 

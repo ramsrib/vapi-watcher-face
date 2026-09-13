@@ -153,6 +153,7 @@ void app_main(void)
     while (1) {
         vTaskDelay(pdMS_TO_TICKS(2000));
         vapi_call_query();
+        vapi_presence_poll();
         if (++tick % 15 == 0) {
             log_heap();
         }

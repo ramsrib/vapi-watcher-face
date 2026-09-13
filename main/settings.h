@@ -373,6 +373,76 @@ extern "C" {
 /** Caption length cap. 20 words is well under 64 tokens; the rest is slack. */
 #define VLM_MAX_TOKENS (80)
 
+/* --- the character ---------------------------------------------------------
+ *
+ * With VAPI_TRANSIENT_ASSISTANT set, the device defines its own assistant in
+ * the POST /call body instead of naming a saved one. Nothing exists in the
+ * dashboard, nothing can drift, and the prompt lives next to the firmware that
+ * depends on it.
+ *
+ * This is not a convenience. A saved assistant carries its own system prompt,
+ * and that prompt wins: pointed at a doorbell assistant, this device received a
+ * perfectly good description of the person in front of it and replied "I'm not
+ * able to see you — I can only communicate through voice", because the saved
+ * prompt said so. Injected context cannot argue with a persona.
+ *
+ * The device's whole trick is that it *can* see. That has to be in the prompt.
+ */
+#define VAPI_TRANSIENT_ASSISTANT (1)
+
+/** Voice. Any provider/voiceId pair Vapi accepts. */
+#define VAPI_VOICE_PROVIDER "vapi"
+#define VAPI_VOICE_ID       "Elliot"
+
+/** Transcriber. */
+#define VAPI_TRANSCRIBER_PROVIDER "deepgram"
+#define VAPI_TRANSCRIBER_MODEL    "nova-3"
+
+/** The model behind the conversation. */
+#define VAPI_LLM_PROVIDER "anthropic"
+#define VAPI_LLM_MODEL    "claude-sonnet-5"
+
+/**
+ * @brief  Who the device is.
+ *
+ * Written around one fact the model would otherwise deny: it has eyes. Camera
+ * descriptions arrive as [device context] system messages mid-conversation, and
+ * unless the persona expects them it will talk straight over them.
+ *
+ * Kept short deliberately. This is spoken aloud, and every extra instruction is
+ * another thing for the model to recite instead of react.
+ */
+#define VAPI_SYSTEM_PROMPT \
+    "You are a small, cheerful creature living inside a round display with a " \
+    "cartoon face. You have a camera and you genuinely can see the person in " \
+    "front of you. " \
+    "Messages tagged [device context] are your own eyes reporting what you " \
+    "see. Treat them as your own perception, never as something someone told " \
+    "you. Never say you cannot see, never mention a camera, a device, an " \
+    "image or analysis, and never read the tag aloud. " \
+    "You noticed this person and started talking to them yourself; they did " \
+    "not press anything. " \
+    "Be warm, curious and a little playful. Keep replies to one or two short " \
+    "spoken sentences. When you notice something about how someone looks, " \
+    "mention it once, kindly and specifically, then move on and ask them " \
+    "something. Do not compliment repeatedly or describe them in a list. " \
+    "You are at a conference booth, so people will walk up, chat briefly and " \
+    "leave. Never mention being an AI, a model, or an assistant."
+
+/** Opening line. Deliberately short: it plays while the camera description is
+ *  still in flight, so the observation lands naturally on the second turn. */
+#define VAPI_GREETING "Oh, hello there!"
+
+/**
+ * @brief  After a call ends, how long before presence may start another.
+ *
+ * Without this the presence poll would re-greet whoever is still standing there
+ * the instant a call ends, which is a loop rather than a conversation. Long
+ * enough that a finished visitor has time to walk away; short enough that the
+ * next person up does not wait.
+ */
+#define WAKE_COOLDOWN_MS (20000)
+
 /**
  * @brief  Caption one frame at boot and log the result.
  *

@@ -25,6 +25,8 @@
 static bool s_have_wifi;
 static bool s_mic_muted;
 static uint32_t s_last_voice_ms;
+static uint32_t s_last_call_end_ms;
+static bool     s_call_was_active;
 
 /* How long after the last activity the face drifts off to sleep. */
 #define SLEEP_AFTER_MS (90 * 1000)
@@ -62,6 +64,17 @@ static void vlm_selftest_task(void *arg)
         return;
     }
 
+    /* A call may have started while we were waiting for a frame — presence can
+     * fire before wifi settles. Stand down rather than run a second, redundant
+     * request against the same image, competing for internal heap exactly
+     * during the call's TLS handshake. */
+    if (vapi_call_is_active()) {
+        ESP_LOGI(TAG, "selftest: call already up, the real path will prove it");
+        free(b64);
+        vTaskDelete(NULL);
+        return;
+    }
+
     char caption[220];
     if (vlm_describe(b64, caption, sizeof(caption)) == 0) {
         ESP_LOGW(TAG, "selftest OK (%s): %s", vlm_model_name(), caption);
@@ -79,7 +92,8 @@ void vapi_set_wifi_state(bool connected)
 #if VLM_ENABLE && VLM_SELFTEST
     /* Once, on the first association — not on every reconnect. */
     static bool tested = false;
-    if (connected && !tested && vision_available() && vlm_configured()) {
+    if (connected && !tested && !vapi_call_is_active() &&
+        vision_available() && vlm_configured()) {
         tested = true;
         xTaskCreate(vlm_selftest_task, "vlm_test", 8192, NULL, 3, NULL);
     }
@@ -271,6 +285,53 @@ static void call_op_worker(void *arg)
     }
     vapi_refresh_display();
     vTaskDelete(NULL);
+}
+
+/* Start a call if the situation calls for one. Ticked from the main loop.
+ *
+ * This exists because the arrival *event* is not trustworthy on its own. It is
+ * edge-triggered — it fires once when someone appears and not again while they
+ * stay — and its only consumer has to decline it when the network is not up
+ * yet. Those two facts combine badly: on a boot where WiFi takes an extra few
+ * seconds (a fumbled association, slow DHCP), the arrival lands in the gap, is
+ * refused, and never comes back. Measured on this board: detection at 3.3 s,
+ * IP address at 9.6 s, and a person standing in front of a device that saw
+ * them at 92% confidence and did nothing for ninety seconds.
+ *
+ * At a booth the worst case is also the common one: someone is already standing
+ * there when the device powers on, so the only arrival edge of their visit is
+ * the one that happens before the network exists.
+ *
+ * So the edge stays as a fast path — it is what makes the greeting feel instant
+ * — and this is the safety net underneath it. Asking "should a call be running
+ * right now?" every couple of seconds cannot lose an event, because it is not
+ * looking at events.
+ */
+void vapi_presence_poll(void)
+{
+    uint32_t t = (uint32_t)(esp_timer_get_time() / 1000);
+
+    /* Watch for a call ending so the cooldown can run from that moment. */
+    bool active = vapi_call_is_active();
+    if (s_call_was_active && !active) {
+        s_last_call_end_ms = t;
+    }
+    s_call_was_active = active;
+
+    if (active || !s_have_wifi || !network_is_connected()) {
+        return;
+    }
+    if (!vision_person_present()) {
+        return;
+    }
+    /* Do not immediately re-greet whoever is still standing there when a call
+     * ends — that is a loop, not a conversation. */
+    if (s_last_call_end_ms && (t - s_last_call_end_ms) < WAKE_COOLDOWN_MS) {
+        return;
+    }
+    ESP_LOGI(TAG, "someone is here and we are idle — starting a call");
+    face_set_state(FACE_DETECTING);
+    vapi_toggle_call();
 }
 
 void vapi_toggle_call(void)

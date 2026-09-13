@@ -166,7 +166,48 @@ static char *build_create_call_body(const vapi_call_cfg_t *cfg)
     if (root == NULL) {
         return NULL;
     }
+#if VAPI_TRANSIENT_ASSISTANT
+    /* A transient assistant: defined here, existing only for this call.
+     *
+     * The alternative — naming a saved assistant — means the character is in a
+     * dashboard somewhere and this firmware has no say in it. That is not a
+     * style preference: the saved assistant's system prompt outranks anything
+     * injected mid-call, so pointing this device at a doorbell assistant made
+     * it insist it could not see, while holding a correct description of the
+     * person standing in front of it. The persona has to know it has eyes, and
+     * the only way to guarantee that is to ship it with the firmware. */
+    cJSON *a = cJSON_AddObjectToObject(root, "assistant");
+    cJSON_AddStringToObject(a, "firstMessage",
+                            (cfg->first_message && cfg->first_message[0])
+                                ? cfg->first_message : VAPI_GREETING);
+
+    cJSON *model = cJSON_AddObjectToObject(a, "model");
+    cJSON_AddStringToObject(model, "provider", VAPI_LLM_PROVIDER);
+    cJSON_AddStringToObject(model, "model", VAPI_LLM_MODEL);
+    cJSON *sys = cJSON_AddArrayToObject(model, "messages");
+    cJSON *sysmsg = cJSON_CreateObject();
+    cJSON_AddStringToObject(sysmsg, "role", "system");
+    cJSON_AddStringToObject(sysmsg, "content", VAPI_SYSTEM_PROMPT);
+    cJSON_AddItemToArray(sys, sysmsg);
+
+    cJSON *voice = cJSON_AddObjectToObject(a, "voice");
+    cJSON_AddStringToObject(voice, "provider", VAPI_VOICE_PROVIDER);
+    cJSON_AddStringToObject(voice, "voiceId", VAPI_VOICE_ID);
+
+    cJSON *tr = cJSON_AddObjectToObject(a, "transcriber");
+    cJSON_AddStringToObject(tr, "provider", VAPI_TRANSCRIBER_PROVIDER);
+    cJSON_AddStringToObject(tr, "model", VAPI_TRANSCRIBER_MODEL);
+
+    if (cfg->max_seconds > 0) {
+        cJSON_AddNumberToObject(a, "maxDurationSeconds", cfg->max_seconds);
+    }
+    cJSON *cm = cJSON_AddArrayToObject(a, "clientMessages");
+    cJSON_AddItemToArray(cm, cJSON_CreateString("transcript"));
+    cJSON_AddItemToArray(cm, cJSON_CreateString("status-update"));
+    cJSON_AddItemToArray(cm, cJSON_CreateString("speech-update"));
+#else
     cJSON_AddStringToObject(root, "assistantId", cfg->assistant_id);
+#endif
 
     cJSON *transport = cJSON_AddObjectToObject(root, "transport");
     cJSON_AddStringToObject(transport, "provider", "vapi.websocket");
@@ -175,8 +216,11 @@ static char *build_create_call_body(const vapi_call_cfg_t *cfg)
     cJSON_AddStringToObject(fmt, "container", "raw");
     cJSON_AddNumberToObject(fmt, "sampleRate", VAPI_SAMPLE_RATE);
 
+#if !VAPI_TRANSIENT_ASSISTANT
     /* Overrides apply to this call only — the saved assistant is never
-     * modified, so a device experiment cannot change the dashboard config. */
+     * modified, so a device experiment cannot change the dashboard config.
+     * A transient assistant needs none of this: it already carries these fields
+     * itself, and Vapi rejects a body that sends both. */
     cJSON *ov = cJSON_AddObjectToObject(root, "assistantOverrides");
     if (cfg->first_message && cfg->first_message[0]) {
         cJSON_AddStringToObject(ov, "firstMessage", cfg->first_message);
@@ -191,6 +235,7 @@ static char *build_create_call_body(const vapi_call_cfg_t *cfg)
     cJSON_AddItemToArray(msgs, cJSON_CreateString("transcript"));
     cJSON_AddItemToArray(msgs, cJSON_CreateString("status-update"));
     cJSON_AddItemToArray(msgs, cJSON_CreateString("speech-update"));
+#endif
 
     char *body = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
@@ -584,10 +629,12 @@ static int call_start_locked(void)
         ESP_LOGE(TAG, "VAPI_API_KEY is empty. Set it in .env or via menuconfig.");
         return -1;
     }
+#if !VAPI_TRANSIENT_ASSISTANT
     if (VAPI_ASSISTANT_ID[0] == '\0') {
         ESP_LOGE(TAG, "VAPI_ASSISTANT_ID is empty. Set it in .env or via menuconfig.");
         return -1;
     }
+#endif
 
     vapi_call_cfg_t cfg = {
         .api_url       = VAPI_API_URL,
