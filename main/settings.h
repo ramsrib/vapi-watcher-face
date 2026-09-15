@@ -516,10 +516,9 @@ extern "C" {
 
 /** Opening line. Deliberately short: it plays while the camera description is
  *  still in flight, so the observation lands naturally on the second turn. */
-/* No announcing of senses. "Hello, I can see you and hear you" was the greeting
- * for a while and it grates immediately: a creature that has to tell you it can
- * see is not one you believe. Showing beats claiming — the specific observation
- * a second later does all the work this line should not attempt. */
+/* Deliberately says nothing about what the device can do. A greeting that
+ * announces its own senses ("I can see you and hear you") undercuts them; the
+ * specific observation a second later is what makes seeing believable. */
 #define VAPI_GREETING "Oh, hi there!"
 
 /**
@@ -660,12 +659,11 @@ extern "C" {
  * @brief  Default speaker volume (0-100). The codec accepts up to 100; 90
  *         leaves a little headroom against distortion and current draw.
  *
- * This was 60 for a while, then 78, because echo scaled with it. That no longer
- * applies: VAPI_ECHO_GATE hard-mutes the microphone whenever the assistant is
- * audible, so however loud the speaker gets, none of it reaches Vapi. Echo
- * stopped being the constraint on loudness the moment the gate started working.
+ * Echo does not constrain this. VAPI_ECHO_GATE hard-mutes the microphone whenever
+ * the assistant is audible, so however loud the speaker gets, none of it reaches
+ * Vapi.
  *
- * What limits it now is physical, not acoustic:
+ * The limits are physical, not acoustic:
  *   - the Echo Base speaker is small and will distort before it runs out of
  *     digital range, so back off with `vol -10` if it sounds harsh rather than
  *     merely loud;
