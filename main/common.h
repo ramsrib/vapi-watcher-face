@@ -44,7 +44,9 @@ int  vapi_send_control(const char *control);
 
 /* --- wifi (wifi.c) --------------------------------------------------------- */
 
-int  wifi_start(const char *ssid, const char *pass);
+/** Bring up WiFi, trying each configured network in turn until one answers.
+ *  Networks come from WIFI_SSID / WIFI_SSID_2 / WIFI_SSID_3 in settings.h. */
+int  wifi_start(void);
 bool network_is_connected(void);
 
 /* --- app wiring (vapi_app.c) ---------------------------------------------- */

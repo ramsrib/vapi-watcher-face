@@ -451,6 +451,27 @@ else. The vision layer reports what is in front of the camera; the assistant's
 system prompt decides what is worth saying about it. Task-specific instructions
 belong there, where they can see the conversation, not here, where they cannot.
 
+## WiFi failover
+
+`WIFI_SSID_2` / `WIFI_SSID_3` in `.env` are backup networks, tried in order when
+the one above them does not answer. Leave them blank and nothing changes —
+blank entries are dropped at startup.
+
+For a booth the second one wants to be a phone hotspot. Venue WiFi is the least
+reliable part of a conference, and the difference it makes is between "the demo
+is down" and a pause of a few seconds nobody attributes to the network.
+
+Each network gets two attempts before the next is tried. Two, because a dropped
+association and an absent AP are indistinguishable from the device's side and
+want opposite responses: the first usually reconnects immediately, the second
+never will. One retry serves the blip without stranding the device on a network
+that is not there.
+
+At roughly 4 s per network a full cycle of three is ~12 s, which is longer than
+a booth visitor will wait — so the order matters. Put the network you expect to
+work first. On success the index stays put rather than resetting, so a network
+that just worked is the one retried first if it blips.
+
 ## A booth is a queue, not one conversation
 
 Two bugs that only matter once the second visitor walks up, which is to say:

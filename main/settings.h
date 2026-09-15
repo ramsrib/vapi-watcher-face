@@ -75,6 +75,46 @@ extern "C" {
 #define WIFI_PASSWORD CONFIG_VAPI_WIFI_PASSWORD
 #endif
 
+/* Backup networks. Empty ones are skipped, so filling in none of these leaves
+ * behaviour exactly as it was. */
+#ifdef ENV_WIFI_SSID_2
+#define WIFI_SSID_2 ENV_WIFI_SSID_2
+#else
+#define WIFI_SSID_2 ""
+#endif
+#ifdef ENV_WIFI_PASSWORD_2
+#define WIFI_PASSWORD_2 ENV_WIFI_PASSWORD_2
+#else
+#define WIFI_PASSWORD_2 ""
+#endif
+#ifdef ENV_WIFI_SSID_3
+#define WIFI_SSID_3 ENV_WIFI_SSID_3
+#else
+#define WIFI_SSID_3 ""
+#endif
+#ifdef ENV_WIFI_PASSWORD_3
+#define WIFI_PASSWORD_3 ENV_WIFI_PASSWORD_3
+#else
+#define WIFI_PASSWORD_3 ""
+#endif
+
+/**
+ * @brief  How many times to try one network before moving to the next.
+ *
+ * Two, because the two failures look identical from here but want opposite
+ * responses: an AP that is absent should be abandoned immediately, while one
+ * that dropped a working connection usually takes it straight back. One retry
+ * serves the blip; a second failure means move on.
+ *
+ * With a 2 s gap that is about 4 s per network, so a full cycle of three is
+ * ~12 s — slower than a booth visitor will wait, which is why the order
+ * matters: put the network you expect to work first.
+ */
+#define WIFI_ATTEMPTS_PER_NET (2)
+
+/** Gap between connection attempts. */
+#define WIFI_RETRY_DELAY_MS (2000)
+
 #ifdef ENV_VAPI_API_URL
 #define VAPI_API_URL ENV_VAPI_API_URL
 #else

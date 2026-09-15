@@ -162,7 +162,7 @@ void app_main(void)
     vision_on_presence(on_person_arrived);
 #endif
 
-    wifi_start(WIFI_SSID, WIFI_PASSWORD);
+    wifi_start();
     xTaskCreate(button_task, "button", 3072, NULL, 5, NULL);
 
 #if VAPI_SELFTEST_CALL
