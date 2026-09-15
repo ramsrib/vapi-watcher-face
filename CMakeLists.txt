@@ -18,13 +18,43 @@ set(CMAKE_POLICY_VERSION_MINIMUM 3.5 CACHE STRING "" FORCE)
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 
-set(WATCHER_SDK "${CMAKE_CURRENT_LIST_DIR}/../_sdk/SenseCAP-Watcher-Firmware")
-if(NOT EXISTS "${WATCHER_SDK}/components/sensecap-watcher")
-    message(FATAL_ERROR
-        "SenseCAP-Watcher-Firmware not found at ${WATCHER_SDK}.\n"
-        "git clone https://github.com/Seeed-Studio/SenseCAP-Watcher-Firmware.git "
-        "and run: git submodule update --init --recursive")
+# Seeed's SDK supplies the BSP, the Himax sscma_client and the LVGL port. It is
+# not vendored here — it is large, and pinning someone else's tree inside this
+# repo ages badly — so it is cloned alongside and found by one of, in order:
+#
+#   -DWATCHER_SDK=/path/to/SenseCAP-Watcher-Firmware   (explicit wins)
+#   $WATCHER_SDK in the environment
+#   deps/SenseCAP-Watcher-Firmware                     (what `make deps` creates)
+#   ../_sdk/SenseCAP-Watcher-Firmware                  (shared across projects)
+if(NOT WATCHER_SDK AND DEFINED ENV{WATCHER_SDK})
+    set(WATCHER_SDK "$ENV{WATCHER_SDK}")
 endif()
+# A relative path would resolve against the build directory, which fails in a
+# way that reads as "SDK not found" rather than "wrong base".
+if(WATCHER_SDK AND NOT IS_ABSOLUTE "${WATCHER_SDK}")
+    get_filename_component(WATCHER_SDK "${WATCHER_SDK}" ABSOLUTE
+                           BASE_DIR "${CMAKE_CURRENT_LIST_DIR}")
+endif()
+if(NOT WATCHER_SDK)
+    foreach(_candidate
+            "${CMAKE_CURRENT_LIST_DIR}/deps/SenseCAP-Watcher-Firmware"
+            "${CMAKE_CURRENT_LIST_DIR}/../_sdk/SenseCAP-Watcher-Firmware")
+        if(EXISTS "${_candidate}/components/sensecap-watcher")
+            set(WATCHER_SDK "${_candidate}")
+            break()
+        endif()
+    endforeach()
+endif()
+if(NOT WATCHER_SDK OR NOT EXISTS "${WATCHER_SDK}/components/sensecap-watcher")
+    message(FATAL_ERROR
+        "SenseCAP-Watcher-Firmware not found.\n"
+        "Run `make deps`, or clone it yourself and point at it:\n"
+        "  git clone --recursive "
+        "https://github.com/Seeed-Studio/SenseCAP-Watcher-Firmware.git "
+        "deps/SenseCAP-Watcher-Firmware\n"
+        "  (or build with -DWATCHER_SDK=/path/to/SenseCAP-Watcher-Firmware)")
+endif()
+message(STATUS "SenseCAP SDK: ${WATCHER_SDK}")
 
 # Note lvgl is absent: the SDK's vendored copy hard-depends on rlottie via
 # override_path, and rlottie's own CMakeLists declares

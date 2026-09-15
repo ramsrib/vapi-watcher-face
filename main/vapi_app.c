@@ -256,7 +256,7 @@ void vapi_on_call_connected(void)
      * It also cost the point of the feature. The vague message landed first and
      * anchored the model on it, so when asked "what do you see?" it answered
      * "I see you standing right there" while holding an accurate description of
-     * a grey Bulldogs t-shirt it never mentioned.
+     * a grey printed t-shirt it never mentioned.
      *
      * The system prompt already establishes that it noticed someone and started
      * the conversation itself. Nothing here needs to say so again, and the only

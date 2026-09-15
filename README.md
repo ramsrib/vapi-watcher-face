@@ -1,14 +1,57 @@
 # Vapi Watcher Face
 
-An animated face on a **SenseCAP Watcher** that sees you and talks back through
-[Vapi](https://vapi.ai). Built to live inside a soft toy, with the round display
-as its face.
+An animated face on a **SenseCAP Watcher** that watches for people, notices what
+they look like, and talks to them through [Vapi](https://vapi.ai). Built to live
+inside a soft toy, with the round display as its face.
 
-> **Status:** face and voice work on hardware — press the knob, talk, it talks
-> back, with no echo. Vision is written but blocked on the Himax having no model
-> Vision now runs — the Himax reports its model and inference streams at ~11/s —
-> but the camera returns black frames, which appears to be physical.
-> See [Roadmap](#roadmap).
+Nobody presses anything. The on-board NPU spots a person, the device places a
+call on its own, and a vision model describes what the camera sees — so it can
+say "nice tennis ball" rather than "hello, user".
+
+> **Status:** working on hardware. It notices you, greets you, describes what you
+> are wearing and holding, and hangs up when you leave. Built and tested on a
+> SenseCAP Watcher W1-A.
+
+```
+ Himax NPU ──person?──> ESP32-S3 ──POST /call──> Vapi ──websocket──> PCM audio
+     │                      │                      ▲
+     └──JPEG──> vision model ──one sentence────────┘  (add-message, silent)
+```
+
+## What you need
+
+- A **SenseCAP Watcher W1-A**
+- **ESP-IDF v5.5.1+**
+- A **Vapi** account and a private API key
+- An **Anthropic** (or OpenAI) API key, for the camera descriptions — optional;
+  without one the device still sees people and talks, it just never mentions
+  what they look like
+
+```console
+make deps          # clone Seeed's SDK (one-time)
+make setup         # create .env, then fill it in
+make run           # build + flash + monitor
+```
+
+**Do not use `idf.py flash`.** The Watcher's USB-serial bridge drops bytes on
+writes over 256 bytes; `make flash` uses `tools/flash.py`, which caps them.
+[Why](#why-toolsflashpy-instead-of-idfpy-flash).
+
+There is deliberately no `make erase` — see the note at the bottom of the
+Makefile.
+
+## Where the interesting parts are
+
+Most of this repo is ordinary ESP-IDF plumbing. These are the bits that cost
+real time to get right, and that you would hit too:
+
+| | |
+|---|---|
+| [Audio: why there is no AEC here](#audio-why-there-is-no-aec-here) | two codecs, no echo reference — gating beats cancelling |
+| [`CONFIG_FREERTOS_HZ`](#what-was-actually-wrong-config_freertos_hz) | the tick rate that broke every NPU command |
+| [add-message triggers a reply](#add-message-triggers-a-reply-unless-you-say-otherwise) | a Vapi default that makes the assistant answer its own context |
+| [Internal RAM and TLS](#internal-ram-is-the-constraint-and-tls-is-what-spends-it) | concurrent TLS sessions starving SPI DMA |
+| [A booth is a queue](#a-booth-is-a-queue-not-one-conversation) | what breaks on the *second* visitor |
 
 ## The face
 
@@ -30,18 +73,23 @@ cycling through colours. Blinks are randomised, because a face that blinks on a
 fixed schedule looks mechanical.
 
 Palette: mint `#88F1B8` on near-black `#0E0E12`. Full reasoning, contrast
-figures and RGB565 notes in [`../sensecap-watcher/DESIGN-palette.md`](../sensecap-watcher/DESIGN-palette.md).
+figures and RGB565 notes in [`main/palette.h`](main/palette.h).
 
 ## Build and flash
 
-Needs ESP-IDF **5.5.1+** and Seeed's SDK checked out at `../_sdk/SenseCAP-Watcher-Firmware`
-**with submodules initialised**:
+`make deps` clones Seeed's SDK (with submodules) into `deps/`. To share one
+checkout between projects, point at it instead:
 
 ```bash
-git submodule update --init --recursive        # in the SDK checkout
-idf.py build
-python3 tools/flash.py                         # NOT idf.py flash — see below
+make WATCHER_SDK=/path/to/SenseCAP-Watcher-Firmware build
 ```
+
+`make run` is build + flash + monitor. `make help` lists the rest.
+
+Two serial endpoints enumerate when the Watcher is plugged in — the ESP32
+console and the Himax's own, at 921600 baud. Which is which is not guessable
+from the name, and picking wrong gives silence or mojibake rather than an error,
+so pass `PORT=` when auto-detect guesses wrong.
 
 ### Why `tools/flash.py` instead of `idf.py flash`
 
@@ -154,16 +202,14 @@ components/
   esp_codec_dev   vendored 1.3.6, for the I2C compat knob
 ```
 
-Device-level knowledge — hardware inventory, the dual USB ports, the verified
-stock backup, the Himax console, audio architecture — lives in
-[`../sensecap-watcher/`](../sensecap-watcher/). Start at its
-[README](../sensecap-watcher/README.md).
+Device-level knowledge that is not specific to this firmware — the dual USB
+ports, the Himax's own console at 921600 baud, the two-codec audio path — is
+folded into the sections below rather than kept separately.
 
 The voice transport and echo-gate technique came from
-[`../vapi-atoms3r-voice`](../vapi-atoms3r-voice), which is the same idea on an
-M5Stack AtomS3R and is published at
-<https://github.com/ramsrib/vapi-atoms3r-voice>. Its
-[`docs/AEC-TUNING.md`](../vapi-atoms3r-voice/docs/AEC-TUNING.md) is the fuller
+[vapi-atoms3r-voice](https://github.com/ramsrib/vapi-atoms3r-voice), the same
+idea on an M5Stack AtomS3R. Its
+[`docs/AEC-TUNING.md`](https://github.com/ramsrib/vapi-atoms3r-voice/blob/main/docs/AEC-TUNING.md) is the fuller
 treatment of why gating beats cancelling.
 
 ## Vision
@@ -395,7 +441,7 @@ line would have been immediate. The entire point of captioning off the critical
 path was to avoid that, and the connect-time injection put it back.
 
 **It held an accurate description and never used it.** Asked "what do you see?",
-it answered "I see you standing right there" while sitting on "a grey Bulldogs
+it answered "I see you standing right there" while sitting on "a grey printed
 t-shirt". The vague `person, 92%` message landed first and anchored it. Nothing
 now goes out at connect; the only message worth sending is the specific one,
 once it exists.
@@ -552,19 +598,39 @@ that normally cannot be tested without a person in front of the camera — which
 makes the riskiest code the hardest to exercise. It is off by default because it
 places a real, billable call on every boot.
 
-## Roadmap
+## What is done, and what is next
 
-1. ~~Prove the toolchain; face on the display~~ **done**
-2. **Port the Vapi voice client** from [`../vapi-atoms3r-voice`](../vapi-atoms3r-voice) —
-   the BSP exposes `esp_codec_dev_handle_t` for mic and speaker, the same type
-   that firmware builds on, so the transport and echo gate should move nearly
-   verbatim. AEC must be re-measured on this board.
-3. **Wire the face to call state** — the echo gate's write-ahead playout clock is
-   already a sample-accurate "is the assistant audible" signal, which is exactly
-   what drives `speaking` and the mouth.
-4. ~~**Add vision**~~ **done** — inference runs, presence detection wakes a
-   call on its own, and the frame that triggered it is captioned by a vision
-   model and injected via Vapi `add-message` while the greeting is already
-   playing.
-5. Custom art, then an enclosure — and re-measure the acoustics, because a plush
-   changes them completely.
+Everything below the line is working on hardware and described in this README.
+
+| | |
+|---|---|
+| face on the round display | working |
+| Vapi voice, echo-free | working |
+| face follows call state | working |
+| NPU presence detection | working — it starts the call itself |
+| camera descriptions mid-call | working — reads text on a t-shirt, names a held object |
+| WiFi failover | working |
+
+Next:
+
+1. **Aim the camera properly.** Mounted flat it looks past people at the ceiling,
+   and only sees someone who leans in. At a booth people stand in front of a
+   thing; they do not lean. This is the largest remaining gap and it is physical,
+   not firmware.
+2. **Tune `PRESENCE_HOLD_MS`.** Measured detection gaps reach 2004 ms against a
+   2500 ms hold, which is tighter than it should be. The heartbeat prints
+   `max detect gap` so the number can be measured rather than guessed.
+3. **`MIN_SCORE` against false positives.** It is 40 and real detections land at
+   50-87%, so it clears — but it has never been pushed the other way.
+4. **An enclosure**, and re-measure the acoustics: a plush changes them
+   completely, and the echo gate was tuned on a bare board.
+5. `ledc: GPIO 8 is not usable` at boot — backlight brightness is probably
+   inert. Cosmetic unless the venue lighting fights you.
+
+## Licence
+
+MIT — see [LICENSE](LICENSE).
+
+`components/esp_codec_dev/` is Espressif's, vendored at 1.3.6 and unmodified,
+under its own Apache-2.0 licence (see that directory). It is here rather than
+pulled from the registry because of the I2C driver conflict described above.
