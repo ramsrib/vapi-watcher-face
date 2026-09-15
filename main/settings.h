@@ -99,18 +99,19 @@ extern "C" {
 #endif
 
 /**
- * @brief  How many times to try one network before moving to the next.
+ * @brief  How many times one network may fail before the next is tried.
  *
- * Two, because the two failures look identical from here but want opposite
- * responses: an AP that is absent should be abandoned immediately, while one
- * that dropped a working connection usually takes it straight back. One retry
- * serves the blip; a second failure means move on.
+ * Three, sized from measured behaviour rather than taste. Association on a
+ * normal boot routinely fails twice before succeeding — `reason=2` then
+ * `reason=205`, then an IP — identically across three separate boards, so it is
+ * the access point's behaviour and not a flaky unit. At two attempts a healthy
+ * boot consumes the whole budget and any further hiccup switches networks for
+ * no good reason, which at a venue means dropping to a hotspot that may not be
+ * up yet.
  *
- * With a 2 s gap that is about 4 s per network, so a full cycle of three is
- * ~12 s — slower than a booth visitor will wait, which is why the order
- * matters: put the network you expect to work first.
+ * The cost of the extra attempt is ~2 s before a genuine switch.
  */
-#define WIFI_ATTEMPTS_PER_NET (2)
+#define WIFI_ATTEMPTS_PER_NET (3)
 
 /** Gap between connection attempts. */
 #define WIFI_RETRY_DELAY_MS (2000)

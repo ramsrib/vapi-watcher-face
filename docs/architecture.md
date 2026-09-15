@@ -228,7 +228,9 @@ unrelated subsystem next needs DMA.
 `WIFI_SSID`, `WIFI_SSID_2` and `WIFI_SSID_3` are tried in order. Blank entries
 are dropped at startup.
 
-Each network gets `WIFI_ATTEMPTS_PER_NET` (2) attempts before the next is tried.
+Each network gets `WIFI_ATTEMPTS_PER_NET` (3) attempts before the next is tried.
+Association on a normal boot routinely fails twice before succeeding, so a lower
+budget is consumed by healthy behaviour and switches networks needlessly.
 A dropped association and an absent AP are indistinguishable from the device's
 side and want opposite responses — the first usually reconnects immediately, the
 second never will. One retry serves the transient without stranding the device

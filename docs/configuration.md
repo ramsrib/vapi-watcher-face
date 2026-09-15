@@ -111,5 +111,5 @@ equally. See [architecture.md](architecture.md#audio).
 
 | setting | default |
 |---|---|
-| `WIFI_ATTEMPTS_PER_NET` | `2` |
+| `WIFI_ATTEMPTS_PER_NET` | `3` |
 | `WIFI_RETRY_DELAY_MS` | `2000` |
